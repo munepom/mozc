@@ -34,7 +34,6 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,7 +47,6 @@
 #include "absl/time/time.h"
 #include "base/clock.h"
 #include "base/clock_mock.h"
-#include "composer/query.h"
 #include "config/config_handler.h"
 #include "data_manager/data_manager.h"
 #include "data_manager/testing/mock_data_manager.h"
@@ -56,16 +54,15 @@
 #include "engine/engine_interface.h"
 #include "engine/engine_mock.h"
 #include "engine/mock_data_engine_factory.h"
-#include "engine/modules.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
-#include "session/internal/keymap.h"
-#include "session/session_handler_interface.h"
+#include "session/keymap.h"
+#include "session/session_handler.h"
 #include "session/session_handler_test_util.h"
 #include "testing/gmock.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
-#include "usage_stats/usage_stats_testing_util.h"
+#include "testing/test_peer.h"
 
 ABSL_DECLARE_FLAG(int32_t, max_session_size);
 ABSL_DECLARE_FLAG(int32_t, create_session_min_interval);
@@ -73,14 +70,22 @@ ABSL_DECLARE_FLAG(int32_t, last_command_timeout);
 ABSL_DECLARE_FLAG(int32_t, last_create_session_timeout);
 
 namespace mozc {
+
+class KeyMapManagerAccessorTestPeer : public testing::TestPeer<SessionHandler> {
+ public:
+  explicit KeyMapManagerAccessorTestPeer(SessionHandler& handler)
+      : testing::TestPeer<SessionHandler>(handler) {}
+
+  PEER_VARIABLE(key_map_manager_);
+};
+
 namespace {
 
 using ::mozc::session::testing::SessionHandlerTestBase;
-using ::testing::_;
 using ::testing::Return;
 
 EngineReloadResponse::Status SendMockEngineReloadRequest(
-    SessionHandler &handler, const EngineReloadRequest &request) {
+    SessionHandler& handler, const EngineReloadRequest& request) {
   commands::Command command;
   command.mutable_input()->set_type(
       commands::Input::SEND_ENGINE_RELOAD_REQUEST);
@@ -89,7 +94,7 @@ EngineReloadResponse::Status SendMockEngineReloadRequest(
   return command.output().engine_reload_response().status();
 }
 
-bool CreateSession(SessionHandlerInterface &handler, uint64_t *id) {
+bool CreateSession(SessionHandler& handler, uint64_t* id) {
   commands::Command command;
   command.mutable_input()->set_type(commands::Input::CREATE_SESSION);
   command.mutable_input()->mutable_capability()->set_text_deletion(
@@ -101,21 +106,21 @@ bool CreateSession(SessionHandlerInterface &handler, uint64_t *id) {
   return (command.output().error_code() == commands::Output::SESSION_SUCCESS);
 }
 
-bool DeleteSession(SessionHandlerInterface &handler, uint64_t id) {
+bool DeleteSession(SessionHandler& handler, uint64_t id) {
   commands::Command command;
   command.mutable_input()->set_id(id);
   command.mutable_input()->set_type(commands::Input::DELETE_SESSION);
   return handler.EvalCommand(&command);
 }
 
-bool CleanUp(SessionHandlerInterface &handler, uint64_t id) {
+bool CleanUp(SessionHandler& handler, uint64_t id) {
   commands::Command command;
   command.mutable_input()->set_id(id);
   command.mutable_input()->set_type(commands::Input::CLEANUP);
   return handler.EvalCommand(&command);
 }
 
-bool IsGoodSession(SessionHandlerInterface &handler, uint64_t id) {
+bool IsGoodSession(SessionHandler& handler, uint64_t id) {
   commands::Command command;
   command.mutable_input()->set_id(id);
   command.mutable_input()->set_type(commands::Input::SEND_KEY);
@@ -132,37 +137,33 @@ constexpr absl::string_view kOssMagicNumber = "\xEFMOZC\x0D\x0A";
 class SessionHandlerTest : public SessionHandlerTestBase {
  protected:
   SessionHandlerTest() {
-    const std::string mock_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "testing", "mock_mozc.data"});
-    mock_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string mock_path =
+        testing::GetSourcePath({"data_manager", "testing", "mock_mozc.data"});
     mock_request_.set_file_path(mock_path);
     mock_request_.set_magic_number(kMockMagicNumber);
 
-    const std::string oss_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "oss", "mozc.data"});
-    oss_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string oss_path =
+        testing::GetSourcePath({"data_manager", "oss", "mozc.data"});
     oss_request_.set_file_path(oss_path);
     oss_request_.set_magic_number(kOssMagicNumber);
 
-    const std::string invalid_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "invalid", "mozc.data"});
-    invalid_path_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string invalid_path =
+        testing::GetSourcePath({"data_manager", "invalid", "mozc.data"});
     invalid_path_request_.set_file_path(invalid_path);
     invalid_path_request_.set_magic_number(kOssMagicNumber);
 
-    invalid_data_request_.set_engine_type(EngineReloadRequest::MOBILE);
     invalid_data_request_.set_file_path(mock_path);
     invalid_data_request_.set_magic_number(kOssMagicNumber);
 
-    DataManager mock_data_manager;
-    mock_data_manager.InitFromFile(mock_request_.file_path(),
-                                   mock_request_.magic_number());
-    mock_version_ = mock_data_manager.GetDataVersion();
+    mock_version_ = DataManager::CreateFromFile(mock_request_.file_path(),
+                                                mock_request_.magic_number())
+                        .value()
+                        ->GetDataVersion();
 
-    DataManager oss_data_manager;
-    oss_data_manager.InitFromFile(oss_request_.file_path(),
-                                  oss_request_.magic_number());
-    oss_version_ = oss_data_manager.GetDataVersion();
+    oss_version_ = DataManager::CreateFromFile(oss_request_.file_path(),
+                                               oss_request_.magic_number())
+                       .value()
+                       ->GetDataVersion();
   }
 
   void SetUp() override {
@@ -177,6 +178,15 @@ class SessionHandlerTest : public SessionHandlerTestBase {
   void TearDown() override {
     Clock::SetClockForUnitTest(nullptr);
     SessionHandlerTestBase::TearDown();
+  }
+
+  void ClearState() override {
+    if (handler_) {
+      commands::Command command;
+      command.mutable_input()->set_type(commands::Input::CLEAR_USER_PREDICTION);
+      handler_->EvalCommand(&command);
+    }
+    SessionHandlerTestBase::ClearState();
   }
 
   static std::unique_ptr<Engine> CreateMockDataEngine() {
@@ -213,7 +223,6 @@ TEST_F(SessionHandlerTest, MaxSessionSizeTest) {
       uint64_t id = 0;
       EXPECT_TRUE(CreateSession(handler, &id));
       ++expected_session_created_num;
-      EXPECT_COUNT_STATS("SessionCreated", expected_session_created_num);
       ids.push_back(id);
       clock.Advance(absl::Seconds(interval_time));
     }
@@ -237,7 +246,6 @@ TEST_F(SessionHandlerTest, MaxSessionSizeTest) {
       uint64_t id = 0;
       EXPECT_TRUE(CreateSession(handler, &id));
       ++expected_session_created_num;
-      EXPECT_COUNT_STATS("SessionCreated", expected_session_created_num);
       ids.push_back(id);
       clock.Advance(absl::Seconds(interval_time));
     }
@@ -253,7 +261,6 @@ TEST_F(SessionHandlerTest, MaxSessionSizeTest) {
     uint64_t id = 0;
     EXPECT_TRUE(CreateSession(handler, &id));
     ++expected_session_created_num;
-    EXPECT_COUNT_STATS("SessionCreated", expected_session_created_num);
 
     // the oldest id no longer exists
     EXPECT_FALSE(IsGoodSession(handler, oldest_id));
@@ -280,7 +287,7 @@ TEST_F(SessionHandlerTest, CreateSession_ConfigTest) {
     // Move to PRECOMPOSITION mode.
     // On Windows, its initial mode is DIRECT.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_KEY);
     input->mutable_key()->set_special_key(commands::KeyEvent::ON);
@@ -290,7 +297,7 @@ TEST_F(SessionHandlerTest, CreateSession_ConfigTest) {
     // Check if the config in ConfigHandler is respected
     // even without SET_CONFIG command.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_KEY);
     input->mutable_key()->set_special_key(commands::KeyEvent::F7);
@@ -390,7 +397,7 @@ TEST_F(SessionHandlerTest, ShutdownTest) {
 
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SHUTDOWN);
     // EvalCommand returns false since the session no longer exists.
@@ -400,15 +407,11 @@ TEST_F(SessionHandlerTest, ShutdownTest) {
 
   {  // Any command should be rejected after shutdown.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::NO_OPERATION);
     EXPECT_FALSE(handler.EvalCommand(&command));
   }
-
-  EXPECT_COUNT_STATS("ShutDown", 1);
-  // CreateSession and Shutdown.
-  EXPECT_COUNT_STATS("SessionAllEvent", 2);
 }
 
 TEST_F(SessionHandlerTest, ClearHistoryTest) {
@@ -419,36 +422,30 @@ TEST_F(SessionHandlerTest, ClearHistoryTest) {
 
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::CLEAR_USER_HISTORY);
     EXPECT_TRUE(handler.EvalCommand(&command));
     EXPECT_EQ(command.output().id(), session_id);
-    EXPECT_COUNT_STATS("ClearUserHistory", 1);
   }
 
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::CLEAR_USER_PREDICTION);
     EXPECT_TRUE(handler.EvalCommand(&command));
     EXPECT_EQ(command.output().id(), session_id);
-    EXPECT_COUNT_STATS("ClearUserPrediction", 1);
   }
 
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::CLEAR_UNUSED_USER_PREDICTION);
     EXPECT_TRUE(handler.EvalCommand(&command));
     EXPECT_EQ(command.output().id(), session_id);
-    EXPECT_COUNT_STATS("ClearUnusedUserPrediction", 1);
   }
-
-  // CreateSession and Clear{History|UserPrediction|UnusedUserPrediction}.
-  EXPECT_COUNT_STATS("SessionAllEvent", 4);
 }
 
 TEST_F(SessionHandlerTest, ElapsedTimeTest) {
@@ -459,24 +456,22 @@ TEST_F(SessionHandlerTest, ElapsedTimeTest) {
   ClockMock clock(absl::FromUnixSeconds(1000));
   Clock::SetClockForUnitTest(&clock);
   EXPECT_TRUE(CreateSession(handler, &id));
-  EXPECT_TIMING_STATS("ElapsedTimeUSec", 0, 1, 0, 0);
   Clock::SetClockForUnitTest(nullptr);
 }
 
 TEST_F(SessionHandlerTest, ConfigTest) {
-  config::Config config;
-  config::ConfigHandler::GetConfig(&config);
+  config::Config config = config::ConfigHandler::GetCopiedConfig();
   SessionHandler handler(CreateMockDataEngine());
 
   {
     // Set KOTOERI keymap
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_type(commands::Input::SET_CONFIG);
     config.set_session_keymap(config::Config::KOTOERI);
     *input->mutable_config() = config;
     EXPECT_TRUE(handler.EvalCommand(&command));
-    config::ConfigHandler::GetConfig(&config);
+    config = config::ConfigHandler::GetCopiedConfig();
     EXPECT_EQ(command.output().config().session_keymap(),
               config::Config::KOTOERI);
   }
@@ -487,7 +482,7 @@ TEST_F(SessionHandlerTest, ConfigTest) {
     // Move to PRECOMPOSITION mode.
     // On Windows, its initial mode is DIRECT.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_KEY);
     input->mutable_key()->set_special_key(commands::KeyEvent::ON);
@@ -497,7 +492,7 @@ TEST_F(SessionHandlerTest, ConfigTest) {
     // KOTOERI doesn't assign anything to ctrl+shift+space (precomposition) so
     // SEND_KEY shouldn't consume it.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_KEY);
     input->mutable_key()->set_special_key(commands::KeyEvent::SPACE);
@@ -510,21 +505,21 @@ TEST_F(SessionHandlerTest, ConfigTest) {
     // Set ATOK keymap
     // The existing Session should apply it immediately.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SET_CONFIG);
     config.set_session_keymap(config::Config::ATOK);
     *input->mutable_config() = config;
     EXPECT_TRUE(handler.EvalCommand(&command));
     EXPECT_EQ(command.output().id(), command.input().id());
-    config::ConfigHandler::GetConfig(&config);
+    config = config::ConfigHandler::GetCopiedConfig();
     EXPECT_EQ(command.output().config().session_keymap(), config::Config::ATOK);
   }
   {
     // ATOK assigns a function to ctrl+f7 (precomposition) (KOTOERI doesn't) so
     // TEST_SEND_KEY should consume it.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_KEY);
     input->mutable_key()->set_special_key(commands::KeyEvent::F7);
@@ -533,15 +528,10 @@ TEST_F(SessionHandlerTest, ConfigTest) {
     EXPECT_EQ(command.output().launch_tool_mode(),
               commands::Output::WORD_REGISTER_DIALOG);
   }
-
-  EXPECT_COUNT_STATS("SetConfig", 1);
-  // CreateSession, GetConfig and SetConfig.
-  EXPECT_COUNT_STATS("SessionAllEvent", 3);
 }
 
 TEST_F(SessionHandlerTest, UpdateComposition) {
-  config::Config config;
-  config::ConfigHandler::GetConfig(&config);
+  config::Config config = config::ConfigHandler::GetCopiedConfig();
   config::ConfigHandler::SetConfig(config);
   SessionHandler handler(CreateMockDataEngine());
 
@@ -551,7 +541,7 @@ TEST_F(SessionHandlerTest, UpdateComposition) {
     // Move to PRECOMPOSITION mode.
     // On Windows, its initial mode is DIRECT.
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_KEY);
     input->mutable_key()->set_special_key(commands::KeyEvent::ON);
@@ -559,12 +549,12 @@ TEST_F(SessionHandlerTest, UpdateComposition) {
   }
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SEND_COMMAND);
     input->mutable_command()->set_type(
         commands::SessionCommand::UPDATE_COMPOSITION);
-    commands::SessionCommand::CompositionEvent *composition_event =
+    commands::SessionCommand::CompositionEvent* composition_event =
         input->mutable_command()->add_composition_events();
     composition_event->set_composition_string("かん字");
     composition_event->set_probability(1.0);
@@ -575,10 +565,8 @@ TEST_F(SessionHandlerTest, UpdateComposition) {
 }
 
 TEST_F(SessionHandlerTest, KeyMapTest) {
-  config::Config config;
-  config::ConfigHandler::GetConfig(&config);
-  config::ConfigHandler::SetConfig(config);
-  const keymap::KeyMapManager *msime_keymap;
+  config::Config config = config::ConfigHandler::GetCopiedConfig();
+  const keymap::KeyMapManager* msime_keymap;
 
   SessionHandler handler(CreateMockDataEngine());
 
@@ -587,23 +575,25 @@ TEST_F(SessionHandlerTest, KeyMapTest) {
 
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SET_CONFIG);
     input->mutable_config()->set_session_keymap(config::Config::MSIME);
     EXPECT_TRUE(handler.EvalCommand(&command));
-    msime_keymap = handler.key_map_manager_.get();
+    msime_keymap =
+        KeyMapManagerAccessorTestPeer(handler).key_map_manager_().get();
   }
   {
     commands::Command command;
-    commands::Input *input = command.mutable_input();
+    commands::Input* input = command.mutable_input();
     input->set_id(session_id);
     input->set_type(commands::Input::SET_CONFIG);
     input->mutable_config()->set_session_keymap(config::Config::KOTOERI);
     EXPECT_TRUE(handler.EvalCommand(&command));
     // As different keymap is set, the handler's keymap manager should be
     // updated.
-    EXPECT_NE(handler.key_map_manager_.get(), msime_keymap);
+    EXPECT_NE(KeyMapManagerAccessorTestPeer(handler).key_map_manager_().get(),
+              msime_keymap);
   }
 }
 
@@ -748,7 +738,7 @@ TEST_F(SessionHandlerTest, EngineRollbackDataTest) {
 TEST_F(SessionHandlerTest, EngineReloadSessionExistsTest) {
   const absl::string_view initial_version = handler_->engine().GetDataVersion();
 
-  const EngineInterface *old_engine_ptr = &(handler_->engine());
+  const EngineInterface* old_engine_ptr = &(handler_->engine());
 
   // As a session is created before data is loaded, engine is not reloaded yet.
   uint64_t id1 = 0;
@@ -799,11 +789,9 @@ TEST_F(SessionHandlerTest, ReloadFromMinimalEngine) {
   absl::string_view data_version = "ReloadFromMinimalEngine";
   EXPECT_CALL(*data_manager, GetDataVersion())
       .WillRepeatedly(Return(data_version));
-  auto modules = std::make_unique<engine::Modules>();
-  CHECK_OK(modules->Init(std::move(data_manager)));
 
   SessionHandler handler(std::move(engine));
-  EXPECT_EQ(handler.engine().GetPredictorName(), "MinimalPredictor");
+  EXPECT_NE(handler.GetDataVersion(), mock_version_);
 
   ASSERT_EQ(SendMockEngineReloadRequest(handler, mock_request_),
             EngineReloadResponse::ACCEPTED);
@@ -811,7 +799,6 @@ TEST_F(SessionHandlerTest, ReloadFromMinimalEngine) {
   // CreateSession updates the Engine including the Predictor.
   uint64_t id = 0;
   ASSERT_TRUE(CreateSession(handler, &id));
-  EXPECT_EQ(handler.engine().GetPredictorName(), "MobilePredictor");
   EXPECT_EQ(handler.GetDataVersion(), mock_version_);
 }
 

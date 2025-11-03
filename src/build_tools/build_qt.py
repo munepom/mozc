@@ -37,7 +37,7 @@ with dropping unnecessary features to minimize the installer size.
 
 By default, this script assumes that Qt archives are stored as
 
-  src/third_party_cache/qtbase-everywhere-src-6.8.0.tar.xz
+  src/third_party_cache/qtbase-everywhere-src-6.9.1.tar.xz
 
 and Qt src files that are necessary to build Mozc will be checked out into
 
@@ -58,8 +58,9 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import time
 from typing import Any, Union
+
+from progress_printer import ProgressPrinter
 from vs_util import get_vs_env_vars
 
 
@@ -71,7 +72,7 @@ ABS_QT_DEST_DIR = ABS_MOZC_SRC_DIR.joinpath('third_party', 'qt')
 ABS_QT_HOST_DIR = ABS_MOZC_SRC_DIR.joinpath('third_party', 'qt_host')
 # The archive filename should be consistent with update_deps.py.
 ABS_QT6_ARCHIVE_PATH = ABS_MOZC_SRC_DIR.joinpath(
-    'third_party_cache', 'qtbase-everywhere-src-6.8.0.tar.xz'
+    'third_party_cache', 'qtbase-everywhere-src-6.9.1.tar.xz'
 )
 ABS_DEFAULT_NINJA_DIR = ABS_MOZC_SRC_DIR.joinpath('third_party', 'ninja')
 QT_CONFIGURE_COMMON = [
@@ -154,66 +155,6 @@ def is_mac() -> bool:
 def is_linux() -> bool:
   """Returns true if the platform is Linux."""
   return os.name == 'posix' and os.uname()[0] == 'Linux'
-
-
-class ProgressPrinter:
-  """A utility to print progress message with carriage return and trancatoin."""
-
-  def __enter__(self):
-    if not sys.stdout.isatty():
-
-      class NoOpImpl:
-        """A no-op implementation in case stdout is not attached to concole."""
-
-        def print_line(self, msg: str) -> None:
-          """No-op implementation.
-
-          Args:
-            msg: Unused.
-          """
-          del msg  # Unused
-          return
-
-        def cleanup(self) -> None:
-          pass
-
-      self.impl = NoOpImpl()
-      return self
-
-    class Impl:
-      """A real implementation in case stdout is attached to concole."""
-
-      last_output_time_ns = time.time_ns()
-
-      def print_line(self, msg: str) -> None:
-        """Print the given message with carriage return and trancatoin.
-
-        Args:
-          msg: Message to be printed.
-        """
-        colmuns = os.get_terminal_size().columns
-        now = time.time_ns()
-        if (now - self.last_output_time_ns) < 25000000:
-          return
-        msg = msg + ' ' * max(colmuns - len(msg), 0)
-        msg = msg[0:(colmuns)] + '\r'
-        sys.stdout.write(msg)
-        sys.stdout.flush()
-        self.last_output_time_ns = now
-
-      def cleanup(self) -> None:
-        colmuns = os.get_terminal_size().columns
-        sys.stdout.write(' ' * colmuns + '\r')
-        sys.stdout.flush()
-
-    self.impl = Impl()
-    return self
-
-  def print_line(self, msg: str) -> None:
-    self.impl.print_line(msg)
-
-  def __exit__(self, *exc):
-    self.impl.cleanup()
 
 
 def qt_extract_filter(

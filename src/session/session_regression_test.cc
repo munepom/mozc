@@ -49,7 +49,7 @@
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "request/request_test_util.h"
-#include "session/internal/ime_context.h"
+#include "session/ime_context.h"
 #include "session/session.h"
 #include "session/session_handler.h"
 #include "testing/gunit.h"
@@ -60,7 +60,7 @@ ABSL_DECLARE_FLAG(bool, use_history_rewriter);
 namespace mozc {
 namespace {
 
-std::string GetComposition(const commands::Command &command) {
+std::string GetComposition(const commands::Command& command) {
   if (!command.output().has_preedit()) {
     return "";
   }
@@ -72,7 +72,7 @@ std::string GetComposition(const commands::Command &command) {
   return preedit;
 }
 
-void InitSessionToPrecomposition(session::Session *session) {
+void InitSessionToPrecomposition(session::Session* session) {
 #ifdef _WIN32
   // Session is created with direct mode on Windows
   // Direct status
@@ -113,7 +113,7 @@ class SessionRegressionTest : public testing::TestWithTempUserProfile {
     absl::SetFlag(&FLAGS_use_history_rewriter, orig_use_history_rewriter_);
   }
 
-  bool SendKey(const std::string &key, commands::Command *command) {
+  bool SendKey(const std::string& key, commands::Command* command) {
     command->Clear();
     command->mutable_input()->set_type(commands::Input::SEND_KEY);
     if (!KeyParser::ParseKey(key, command->mutable_input()->mutable_key())) {
@@ -122,9 +122,9 @@ class SessionRegressionTest : public testing::TestWithTempUserProfile {
     return session_->SendKey(command);
   }
 
-  bool SendKeyWithContext(const std::string &key,
-                          const commands::Context &context,
-                          commands::Command *command) {
+  bool SendKeyWithContext(const std::string& key,
+                          const commands::Context& context,
+                          commands::Command* command) {
     command->Clear();
     *command->mutable_input()->mutable_context() = context;
     command->mutable_input()->set_type(commands::Input::SEND_KEY);
@@ -135,7 +135,7 @@ class SessionRegressionTest : public testing::TestWithTempUserProfile {
   }
 
   bool SendCommandWithId(commands::SessionCommand::CommandType type, int id,
-                         commands::Command *command) {
+                         commands::Command* command) {
     command->Clear();
     command->mutable_input()->set_type(commands::Input::SEND_COMMAND);
     command->mutable_input()->mutable_command()->set_type(type);
@@ -143,13 +143,13 @@ class SessionRegressionTest : public testing::TestWithTempUserProfile {
     return session_->SendCommand(command);
   }
 
-  void InsertCharacterChars(const std::string &chars,
-                            commands::Command *command) {
+  void InsertCharacterChars(const std::string& chars,
+                            commands::Command* command) {
     constexpr uint32_t kNoModifiers = 0;
     for (size_t i = 0; i < chars.size(); ++i) {
       command->clear_input();
       command->clear_output();
-      commands::KeyEvent *key_event = command->mutable_input()->mutable_key();
+      commands::KeyEvent* key_event = command->mutable_input()->mutable_key();
       key_event->set_key_code(chars[i]);
       key_event->set_modifiers(kNoModifiers);
       session_->InsertCharacter(command);
@@ -159,16 +159,15 @@ class SessionRegressionTest : public testing::TestWithTempUserProfile {
   void ResetSession() {
     session_ = handler_->NewSession();
     commands::Request request;
-    table_ = std::make_unique<composer::Table>();
-    table_->InitializeWithRequestAndConfig(request, config_);
-    session_->SetTable(table_.get());
+    auto table = std::make_shared<composer::Table>();
+    table->InitializeWithRequestAndConfig(request, config_);
+    session_->SetTable(table);
   }
 
   const testing::MockDataManager data_manager_;
   bool orig_use_history_rewriter_;
   std::unique_ptr<SessionHandler> handler_;
   std::unique_ptr<session::Session> session_;
-  std::unique_ptr<composer::Table> table_;
   config::Config config_;
 };
 
@@ -182,12 +181,12 @@ TEST_F(SessionRegressionTest, ConvertToTransliterationWithMultipleSegments) {
   command.Clear();
   session_->Convert(&command);
   {  // Check the conversion #1
-    const commands::Output &output = command.output();
+    const commands::Output& output = command.output();
     EXPECT_FALSE(output.has_result());
     EXPECT_TRUE(output.has_preedit());
     EXPECT_FALSE(output.has_candidate_window());
 
-    const commands::Preedit &conversion = output.preedit();
+    const commands::Preedit& conversion = output.preedit();
     ASSERT_LE(2, conversion.segment_size());
     EXPECT_EQ(conversion.segment(0).value(), "ぃ");
   }
@@ -196,12 +195,12 @@ TEST_F(SessionRegressionTest, ConvertToTransliterationWithMultipleSegments) {
   command.Clear();
   session_->TranslateHalfASCII(&command);
   {  // Check the conversion #2
-    const commands::Output &output = command.output();
+    const commands::Output& output = command.output();
     EXPECT_FALSE(output.has_result());
     EXPECT_TRUE(output.has_preedit());
     EXPECT_FALSE(output.has_candidate_window());
 
-    const commands::Preedit &conversion = output.preedit();
+    const commands::Preedit& conversion = output.preedit();
     ASSERT_EQ(conversion.segment_size(), 2);
     EXPECT_EQ(conversion.segment(0).value(), "li");
   }
@@ -359,7 +358,7 @@ TEST_F(SessionRegressionTest, ConsistencyBetweenPredictionAndSuggestion) {
 
   commands::Request request;
   request_test_util::FillMobileRequest(&request);
-  session_->SetRequest(&request);
+  session_->SetRequest(request);
 
   InitSessionToPrecomposition(session_.get());
   commands::Command command;
@@ -404,7 +403,7 @@ TEST_F(SessionRegressionTest, AutoConversionTest) {
     constexpr char kInputKeys[] = "123456.7";
     for (size_t i = 0; kInputKeys[i]; ++i) {
       command.Clear();
-      commands::KeyEvent *key_event = command.mutable_input()->mutable_key();
+      commands::KeyEvent* key_event = command.mutable_input()->mutable_key();
       key_event->set_key_code(kInputKeys[i]);
       key_event->set_key_string(std::string(1, kInputKeys[i]));
       session_->InsertCharacter(&command);
@@ -422,12 +421,12 @@ TEST_F(SessionRegressionTest, AutoConversionTest) {
     config::Config config;
     config::ConfigHandler::GetDefaultConfig(&config);
     config.set_use_auto_conversion(true);
-    session_->SetConfig(&config);
+    session_->SetConfig(config);
 
     constexpr char kInputKeys[] = "aiueo.";
     for (size_t i = 0; i < kInputKeys[i]; ++i) {
       command.Clear();
-      commands::KeyEvent *key_event = command.mutable_input()->mutable_key();
+      commands::KeyEvent* key_event = command.mutable_input()->mutable_key();
       key_event->set_key_code(kInputKeys[i]);
       key_event->set_key_string(std::string(1, kInputKeys[i]));
       session_->InsertCharacter(&command);
@@ -442,15 +441,14 @@ TEST_F(SessionRegressionTest, AutoConversionTest) {
     commands::Command command;
 
     InitSessionToPrecomposition(session_.get());
-    config::Config config;
-    config::ConfigHandler::GetConfig(&config);
+    config::Config config = config::ConfigHandler::GetCopiedConfig();
     config.set_use_auto_conversion(true);
-    session_->SetConfig(&config);
+    session_->SetConfig(config);
 
     constexpr char kInputKeys[] = "1234.";
     for (size_t i = 0; i < kInputKeys[i]; ++i) {
       command.Clear();
-      commands::KeyEvent *key_event = command.mutable_input()->mutable_key();
+      commands::KeyEvent* key_event = command.mutable_input()->mutable_key();
       key_event->set_key_code(kInputKeys[i]);
       key_event->set_key_string(std::string(1, kInputKeys[i]));
       session_->InsertCharacter(&command);
@@ -508,14 +506,13 @@ TEST_F(SessionRegressionTest, TransliterationIssue6209563) {
     commands::Command command;
 
     InitSessionToPrecomposition(session_.get());
-    config::Config config;
-    config::ConfigHandler::GetConfig(&config);
+    config::Config config = config::ConfigHandler::GetCopiedConfig();
     config.set_preedit_method(config::Config::KANA);
 
     // Inserts "ち" 5 times
     for (int i = 0; i < 5; ++i) {
       command.Clear();
-      commands::KeyEvent *key_event = command.mutable_input()->mutable_key();
+      commands::KeyEvent* key_event = command.mutable_input()->mutable_key();
       key_event->set_key_code('a');
       key_event->set_key_string("ち");
       session_->InsertCharacter(&command);
@@ -532,7 +529,7 @@ TEST_F(SessionRegressionTest, CommitT13nSuggestion) {
   // Pending char chunk remains after committing transliteration.
   commands::Request request;
   request_test_util::FillMobileRequest(&request);
-  session_->SetRequest(&request);
+  session_->SetRequest(request);
 
   InitSessionToPrecomposition(session_.get());
 
@@ -553,7 +550,7 @@ TEST_F(SessionRegressionTest, CommitT13nSuggestion) {
 TEST_F(SessionRegressionTest, DeleteCandidateFromHistory) {
   commands::Request request;
   request_test_util::FillMobileRequest(&request);
-  session_->SetRequest(&request);
+  session_->SetRequest(request);
 
   InitSessionToPrecomposition(session_.get());
 

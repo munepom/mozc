@@ -30,7 +30,8 @@
 #ifndef MOZC_REWRITER_USER_BOUNDARY_HISTORY_REWRITER_H_
 #define MOZC_REWRITER_USER_BOUNDARY_HISTORY_REWRITER_H_
 
-#include "converter/converter_interface.h"
+#include <optional>
+
 #include "converter/segments.h"
 #include "request/conversion_request.h"
 #include "rewriter/rewriter_interface.h"
@@ -40,22 +41,25 @@ namespace mozc {
 
 class UserBoundaryHistoryRewriter : public RewriterInterface {
  public:
-  explicit UserBoundaryHistoryRewriter(
-      const ConverterInterface *parent_converter);
+  UserBoundaryHistoryRewriter();
 
-  bool Rewrite(const ConversionRequest &request,
-               Segments *segments) const override;
+  std::optional<ResizeSegmentsRequest> CheckResizeSegmentsRequest(
+      const ConversionRequest& request,
+      const Segments& segments) const override;
+  bool Rewrite(const ConversionRequest& request,
+               Segments* segments) const override {
+    return false;
+  }
 
-  void Finish(const ConversionRequest &request, Segments *segments) override;
+  void Finish(const ConversionRequest& request,
+              const Segments& segments) override;
   bool Sync() override;
   bool Reload() override;
   void Clear() override;
 
  private:
-  bool Resize(const ConversionRequest &request, Segments &segments) const;
-  bool Insert(const ConversionRequest &request, Segments &segments);
+  bool Insert(const ConversionRequest& request, const Segments& segments);
 
-  const ConverterInterface *parent_converter_;
   storage::LruStorage storage_;
 };
 

@@ -113,8 +113,7 @@ WordRegisterDialog::WordRegisterDialog()
       session_(new UserDictionarySession(
           UserDictionaryUtil::GetUserDictionaryFileName())),
       client_(client::ClientFactory::NewClient()),
-      window_title_(GuiUtil::ProductName()),
-      pos_list_provider_(new PosListProvider()) {
+      window_title_(GuiUtil::ProductName()) {
   setupUi(this);
   setWindowFlags(Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint |
                  Qt::WindowStaysOnTopHint);
@@ -145,18 +144,8 @@ WordRegisterDialog::WordRegisterDialog()
     return;
   }
 
-#ifndef ENABLE_CLOUD_SYNC
-  if (session_->mutable_storage()
-          ->ConvertSyncDictionariesToNormalDictionaries()) {
-    LOG(INFO) << "Syncable dictionaries are converted to normal dictionaries";
-    if (absl::Status s = session_->mutable_storage()->Save(); !s.ok()) {
-      LOG(ERROR) << "Failed to save the storage: " << s;
-    }
-  }
-#endif  // !ENABLE_CLOUD_SYNC
-
   // Initialize ComboBox
-  const std::vector<std::string> pos_set = pos_list_provider_->GetPosList();
+  const std::vector<std::string> pos_set = pos_list_provider_.GetPosList();
   CHECK(!pos_set.empty());
 
   for (const std::string &pos : pos_set) {
@@ -165,7 +154,7 @@ WordRegisterDialog::WordRegisterDialog()
   }
   // Set the default POS to "名詞" indexed with 1.
   PartOfSpeechcomboBox->setCurrentIndex(
-      pos_list_provider_->GetPosListDefaultIndex());
+      pos_list_provider_.GetPosListDefaultIndex());
   DCHECK(PartOfSpeechcomboBox->currentText() == "名詞")
       << "The default POS is not 名詞";
 
@@ -173,9 +162,9 @@ WordRegisterDialog::WordRegisterDialog()
   if (!session_->mutable_storage()->Exists().ok() ||
       session_->storage().dictionaries_size() == 0) {
     const QString name = tr("User Dictionary 1");
-    uint64_t dic_id = 0;
-    if (!session_->mutable_storage()->CreateDictionary(name.toStdString(),
-                                                       &dic_id)) {
+    if (!session_->mutable_storage()
+             ->CreateDictionary(name.toStdString())
+             .ok()) {
       LOG(ERROR) << "Failed to create a new dictionary.";
       is_available_ = false;
       return;
@@ -216,7 +205,7 @@ WordRegisterDialog::WordRegisterDialog()
   EnableIME();
 }
 
-WordRegisterDialog::~WordRegisterDialog() {}
+WordRegisterDialog::~WordRegisterDialog() = default;
 
 bool WordRegisterDialog::IsAvailable() const { return is_available_; }
 
@@ -284,7 +273,7 @@ WordRegisterDialog::ErrorCode WordRegisterDialog::SaveEntry() {
   const std::string key = ReadinglineEdit->text().toStdString();
   const std::string value = WordlineEdit->text().toStdString();
   UserDictionary::PosType pos = UserDictionaryUtil::ToPosType(
-      PartOfSpeechcomboBox->currentText().toStdString().c_str());
+      PartOfSpeechcomboBox->currentText().toStdString());
 
   if (key.empty()) {
     return EMPTY_KEY;
@@ -324,9 +313,7 @@ WordRegisterDialog::ErrorCode WordRegisterDialog::SaveEntry() {
   entry->set_value(value);
   entry->set_pos(pos);
 
-  if (absl::Status s = session_->mutable_storage()->Save();
-      !s.ok() && session_->mutable_storage()->GetLastError() ==
-                     mozc::UserDictionaryStorage::SYNC_FAILURE) {
+  if (absl::Status s = session_->mutable_storage()->Save(); !s.ok()) {
     LOG(ERROR) << "Cannot save dictionary: " << s;
     return SAVE_FAILURE;
   }

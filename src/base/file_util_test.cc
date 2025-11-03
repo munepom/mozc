@@ -45,7 +45,7 @@
 #include "base/win32/wide_char.h"
 #endif  // _WIN32
 
-// Ad-hoc workadound against macro problem on Windows.
+// Ad-hoc workaround against macro problem on Windows.
 // On Windows, following macros, defined when you include <windows.h>,
 // should be removed here because they affects the method name definition of
 // Util class.
@@ -284,7 +284,7 @@ TEST(FileUtilTest, CopyFile) {
     SCOPED_TRACE(test_label);
     CreateTestFile(from, test_label);
 
-    const TestData &kData = kTestDataList[i];
+    const TestData& kData = kTestDataList[i];
     const std::wstring wfrom = win32::Utf8ToWide(from);
     const std::wstring wto = win32::Utf8ToWide(to);
     EXPECT_NE(FALSE,
@@ -367,7 +367,7 @@ TEST(FileUtilTest, AtomicRename) {
     SCOPED_TRACE(test_label);
     CreateTestFile(from, test_label);
 
-    const TestData &kData = kTestDataList[i];
+    const TestData& kData = kTestDataList[i];
     const std::wstring wfrom = win32::Utf8ToWide(from);
     const std::wstring wto = win32::Utf8ToWide(to);
     EXPECT_NE(FALSE,
@@ -482,7 +482,7 @@ TEST(FileUtilTest, GetModificationTime) {
                    FileUtil::JoinPath(temp_dir.path(), "not_existent_file"))
                    .ok());
 
-  const std::string &path = FileUtil::JoinPath(temp_dir.path(), "testfile");
+  const std::string& path = FileUtil::JoinPath(temp_dir.path(), "testfile");
   CreateTestFile(path, "content");
   absl::StatusOr<FileTimeStamp> time_stamp1 =
       FileUtil::GetModificationTime(path);

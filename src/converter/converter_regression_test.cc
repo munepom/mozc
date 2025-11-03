@@ -36,7 +36,6 @@
 #include "converter/segments.h"
 #include "engine/engine.h"
 #include "engine/engine_factory.h"
-#include "engine/engine_interface.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
 #include "testing/gunit.h"
@@ -55,7 +54,7 @@ class ConverterRegressionTest : public testing::TestWithTempUserProfile {};
 
 TEST_F(ConverterRegressionTest, QueryOfDeathTest) {
   std::unique_ptr<Engine> engine = EngineFactory::Create().value();
-  ConverterInterface *converter = engine->GetConverter();
+  std::shared_ptr<const ConverterInterface> converter = engine->GetConverter();
 
   CHECK(converter);
   {
@@ -82,7 +81,7 @@ TEST_F(ConverterRegressionTest, QueryOfDeathTest) {
 
 TEST_F(ConverterRegressionTest, Regression3323108) {
   std::unique_ptr<Engine> engine = EngineFactory::Create().value();
-  ConverterInterface *converter = engine->GetConverter();
+  std::shared_ptr<const ConverterInterface> converter = engine->GetConverter();
   Segments segments;
 
   EXPECT_TRUE(

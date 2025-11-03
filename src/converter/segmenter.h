@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "absl/types/span.h"
 #include "converter/node.h"
 #include "data_manager/data_manager.h"
 
@@ -42,7 +43,7 @@ namespace mozc {
 class Segmenter {
  public:
   static std::unique_ptr<Segmenter> CreateFromDataManager(
-      const DataManager &data_manager);
+      const DataManager& data_manager);
 
   // This class does not take the ownership of pointer parameters.
   Segmenter(size_t l_num_elements, size_t r_num_elements,
@@ -50,10 +51,10 @@ class Segmenter {
             absl::Span<const uint16_t> r_table,
             absl::Span<const char> bitarray_data,
             absl::Span<const uint16_t> boundary_data);
-  Segmenter(const Segmenter &) = delete;
-  Segmenter &operator=(const Segmenter &) = delete;
+  Segmenter(const Segmenter&) = delete;
+  Segmenter& operator=(const Segmenter&) = delete;
 
-  bool IsBoundary(const Node &lnode, const Node &rnode,
+  bool IsBoundary(const Node& lnode, const Node& rnode,
                   bool is_single_segment) const;
   bool IsBoundary(uint16_t rid, uint16_t lid) const;
   int32_t GetPrefixPenalty(uint16_t lid) const;

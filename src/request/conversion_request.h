@@ -30,21 +30,98 @@
 #ifndef MOZC_REQUEST_CONVERSION_REQUEST_H_
 #define MOZC_REQUEST_CONVERSION_REQUEST_H_
 
+#include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
+#include "absl/base/attributes.h"
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "base/strings/assign.h"
 #include "base/util.h"
 #include "composer/composer.h"
 #include "config/config_handler.h"
+#include "converter/inner_segment.h"
+#include "prediction/result.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 
 namespace mozc {
 inline constexpr size_t kMaxConversionCandidatesSize = 200;
+
+namespace internal {
+
+// Helper class that holds either the view or copy of T.
+template <typename T>
+class copy_or_view_ptr {
+ public:
+  copy_or_view_ptr() = default;
+  ~copy_or_view_ptr() = default;
+  // default constructor stores the view.
+  copy_or_view_ptr(T& view ABSL_ATTRIBUTE_LIFETIME_BOUND) : view_(&view) {};
+  copy_or_view_ptr(copy_or_view_ptr<T>& other) { CopyFrom(other); }
+  copy_or_view_ptr(const copy_or_view_ptr<T>& other) { CopyFrom(other); }
+  copy_or_view_ptr(copy_or_view_ptr<T>&& other) { MoveFrom(std::move(other)); }
+
+  constexpr T& operator*() const { return *view_; }
+  constexpr T* operator->() { return view_; }
+  constexpr const T* operator->() const { return view_; }
+  explicit operator bool() const { return view_ != nullptr; }
+
+  constexpr void set_view(T& view) {
+    view_ = &view;
+    copy_.reset();
+  }
+
+  constexpr void copy_from(T& copy) {
+    copy_ = std::make_unique<T>(copy);
+    view_ = copy_.get();
+  }
+
+  constexpr void move_from(T&& other) {
+    copy_ = std::make_unique<T>(std::move(other));
+    view_ = copy_.get();
+  }
+
+  constexpr copy_or_view_ptr<T>& operator=(const copy_or_view_ptr<T>& other) {
+    CopyFrom(other);
+    return *this;
+  }
+
+  constexpr copy_or_view_ptr<T>& operator=(copy_or_view_ptr<T>&& other) {
+    MoveFrom(std::move(other));
+    return *this;
+  }
+
+ private:
+  void CopyFrom(const copy_or_view_ptr<T>& other) {
+    if (other.copy_) {
+      copy_ = std::make_unique<T>(*other.copy_);
+      view_ = copy_.get();
+    } else {
+      view_ = other.view_;
+      copy_.reset();
+    }
+  }
+
+  void MoveFrom(copy_or_view_ptr<T>&& other) {
+    if (other.copy_) {
+      copy_ = std::move(other.copy_);
+      view_ = copy_.get();
+    } else {
+      view_ = other.view_;
+      copy_.reset();
+    }
+  }
+
+  T* view_ = nullptr;
+  std::unique_ptr<T> copy_;
+};
+}  // namespace internal
 
 // Contains utilizable information for conversion, suggestion and prediction,
 // including composition, preceding text, etc.
@@ -78,16 +155,13 @@ class ConversionRequest {
     // of possible hiragana.
   };
 
+  // Options must be trivially copyable to get hash value directly.
   struct Options {
     RequestType request_type = CONVERSION;
 
     // Which composer's method to use for conversion key; see the comment around
     // the definition of ComposerKeySelection above.
     ComposerKeySelection composer_key_selection = CONVERSION_KEY;
-
-    // Key used for conversion.
-    // This is typically a Hiragana text to be converted to Kanji words.
-    std::string key;
 
     int max_conversion_candidates_size = kMaxConversionCandidatesSize;
     int max_user_history_prediction_candidates_size = 3;
@@ -120,79 +194,38 @@ class ConversionRequest {
     // If true, use conversion_segment(0).key() instead of ComposerData.
     // TODO(b/365909808): Create a new string field to store the key.
     bool use_already_typing_corrected_key = false;
+
+    // Enables incognito mode even when Config.incognito_mode() or
+    // Request.is_incognito_mode() is false. Use this flag to dynamically change
+    // the incognito_mode per client request.
+    bool incognito_mode = false;
   };
 
+  static_assert(std::is_trivially_copyable<Options>::value,
+                "Options must be trivially copyable");
+
+  // Default constructor stores the view.
+  // All default variable returns global reference.
   ConversionRequest()
-      : ConversionRequest(composer::Composer::CreateEmptyComposerData(),
-                          commands::Request::default_instance(),
-                          commands::Context::default_instance(),
-                          config::ConfigHandler::DefaultConfig(), Options()) {}
+      : composer_data_(composer::Composer::EmptyComposerData()),
+        request_(commands::Request::default_instance()),
+        context_(commands::Context::default_instance()),
+        config_(config::ConfigHandler::DefaultConfig()),
+        history_result_(prediction::Result::DefaultResult()),
+        options_(Options()) {}
 
-  ConversionRequest(const composer::Composer &composer,
-                    const commands::Request &request,
-                    const commands::Context &context,
-                    const config::Config &config, Options &&options)
-      : ConversionRequest(composer.CreateComposerData(), request, context,
-                          config, std::move(options)) {}
-
-  // Remove unnecessary but potentially large options for ConversionRequest from
-  // Config and return it.
-  // TODO(b/365909808): Move this method to Session after updating the
-  // ConversionRequest constructor.
-  static config::Config TrimConfig(const config::Config &base_config) {
-    config::Config config = base_config;
-    config.clear_custom_keymap_table();
-    config.clear_custom_roman_table();
-    return config;
-  }
-
-  static std::string GetKey(const composer::ComposerData &composer,
-                            const RequestType type,
-                            const ComposerKeySelection selection) {
-    if (type == CONVERSION && selection == CONVERSION_KEY) {
-      return composer.GetQueryForConversion();
-    }
-
-    if ((type == CONVERSION && selection == PREDICTION_KEY) ||
-        type == PREDICTION || type == SUGGESTION) {
-      return composer.GetQueryForPrediction();
-    }
-
-    if (type == PARTIAL_PREDICTION || type == PARTIAL_SUGGESTION) {
-      const std::string prediction_key = composer.GetQueryForConversion();
-      return std::string(
-          Util::Utf8SubString(prediction_key, 0, composer.GetCursor()));
-    }
-    return "";
-  }
-
-  ConversionRequest(const composer::ComposerData &composer,
-                    const commands::Request &request,
-                    const commands::Context &context,
-                    const config::Config &config, Options &&options)
-      : composer_(composer),
-        request_(request),
-        context_(context),
-        config_(TrimConfig(config)),
-        options_(options) {
-    // If the key is specified, use it. Otherwise, generate it.
-    // NOTE: Specifying Composer is preferred over specifying key directly.
-    if (options_.key.empty()) {
-      options_.key = GetKey(composer_, options_.request_type,
-                            options_.composer_key_selection);
-    }
-  }
-
-  ConversionRequest(const ConversionRequest &) = default;
-  ConversionRequest(ConversionRequest &&) = default;
+  ConversionRequest(const ConversionRequest&) = default;
+  ConversionRequest(ConversionRequest&&) = default;
 
   // operator= are not available since this class has a const member.
-  ConversionRequest &operator=(const ConversionRequest &) = delete;
-  ConversionRequest &operator=(ConversionRequest &&) = delete;
+  ConversionRequest& operator=(const ConversionRequest&) = delete;
+  ConversionRequest& operator=(ConversionRequest&&) = delete;
 
   RequestType request_type() const { return options_.request_type; }
 
-  const composer::ComposerData &composer() const { return composer_; }
+  const composer::ComposerData& composer() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return *composer_data_;
+  }
 
   bool use_actual_converter_for_realtime_conversion() const {
     return options_.use_actual_converter_for_realtime_conversion;
@@ -210,20 +243,34 @@ class ConversionRequest {
     return options_.composer_key_selection;
   }
 
-  const commands::Request &request() const { return request_; }
-  const commands::Context &context() const { return context_; }
-  const config::Config &config() const { return config_; }
-  const Options &options() const { return options_; }
+  const commands::Request& request() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return *request_;
+  }
+  const commands::Context& context() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return *context_;
+  }
+  const config::Config& config() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return *config_;
+  }
+  const Options& options() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return options_;
+  }
+  const prediction::Result& history_result() const
+      ABSL_ATTRIBUTE_LIFETIME_BOUND {
+    return *history_result_;
+  }
 
   // TODO(noriyukit): Remove these methods after removing skip_slow_rewriters_
   // flag.
   bool skip_slow_rewriters() const { return options_.skip_slow_rewriters; }
 
   bool IsKanaModifierInsensitiveConversion() const {
-    return request_.kana_modifier_insensitive_conversion() &&
-           config_.use_kana_modifier_insensitive_conversion() &&
+    return request_->kana_modifier_insensitive_conversion() &&
+           config_->use_kana_modifier_insensitive_conversion() &&
            options_.kana_modifier_insensitive_conversion;
   }
+
+  bool IsZeroQuerySuggestion() const { return key().empty(); }
 
   size_t max_conversion_candidates_size() const {
     return options_.max_conversion_candidates_size;
@@ -245,99 +292,237 @@ class ConversionRequest {
     return options_.use_already_typing_corrected_key;
   }
 
-  absl::string_view key() const { return options_.key; }
+  // Clients needs to check ConversionRequest::incognito_mode() instead
+  // of Config::incognito_mode() or Request::is_incognito_mode(), as the
+  // incognito mode can also set via Options.
+  bool incognito_mode() const {
+    return options_.incognito_mode || config_->incognito_mode() ||
+           request_->is_incognito_mode();
+  }
+
+  absl::string_view key() const ABSL_ATTRIBUTE_LIFETIME_BOUND { return key_; }
+
+  // Takes the last `size` history key. return all value when size = -1.
+  absl::string_view converter_history_key(int size = -1) const {
+    return history_result_->inner_segments().GetSuffixKeyAndValue(size).first;
+  }
+
+  // Takes the last `size` history value. return all value when size = -1.
+  absl::string_view converter_history_value(int size = -1) const {
+    return history_result_->inner_segments().GetSuffixKeyAndValue(size).second;
+  }
+
+  size_t converter_history_size() const {
+    return history_result_->inner_segments().size();
+  }
+
+  // Returns the right context id of the history.
+  int converter_history_rid() const { return history_result_->rid; }
+
+  // Returns the cost of the history if defined.
+  int converter_history_cost() const { return history_result_->cost; }
+
+  // Builder can access the private member for construction.
+  friend class ConversionRequestBuilder;
 
  private:
   // Required options
   // Input composer to generate a key for conversion, suggestion, etc.
-  const composer::ComposerData composer_;
+  internal::copy_or_view_ptr<const composer::ComposerData> composer_data_;
 
   // Input request.
-  const commands::Request request_;
+  internal::copy_or_view_ptr<const commands::Request> request_;
 
   // Input context.
-  const commands::Context context_;
+  internal::copy_or_view_ptr<const commands::Context> context_;
 
   // Input config.
-  const config::Config config_;
+  internal::copy_or_view_ptr<const config::Config> config_;
+
+  // Left context history.
+  internal::copy_or_view_ptr<const prediction::Result> history_result_;
 
   // Options for conversion request.
   Options options_;
+
+  // Key used for conversion.
+  // This is typically a Hiragana text to be converted to Kanji words.
+  std::string key_;
 };
 
 class ConversionRequestBuilder {
  public:
   ConversionRequest Build() {
+    // If the key is specified, use it. Otherwise, generate it.
+    // NOTE: Specifying Composer is preferred over specifying key directly.
     DCHECK_LE(stage_, 3);
     stage_ = 100;
-    return ConversionRequest(std::move(composer_data_), std::move(request_),
-                             std::move(context_), std::move(config_),
-                             std::move(options_));
+    if (request_.key_.empty()) {
+      request_.key_ =
+          GetKey(*request_.composer_data_, request_.options_.request_type,
+                 request_.options_.composer_key_selection);
+    }
+    return request_;
   }
 
-  ConversionRequestBuilder &SetConversionRequest(
-      const ConversionRequest &base_convreq) {
+  ConversionRequestBuilder& SetConversionRequest(
+      const ConversionRequest& base_convreq) {
     DCHECK_LE(stage_, 1);
     stage_ = 1;
-    composer_data_ = base_convreq.composer();
-    request_ = base_convreq.request();
-    context_ = base_convreq.context();
-    config_ = base_convreq.config();
-    options_ = base_convreq.options();
+    // Uses the default copy operator.
+    // whether using view or copy depends on the storage type of
+    // `base_convreq`.
+    request_.composer_data_ = base_convreq.composer_data_;
+    request_.request_ = base_convreq.request_;
+    request_.context_ = base_convreq.context_;
+    request_.config_ = base_convreq.config_;
+    request_.history_result_ = base_convreq.history_result_;
+    request_.options_ = base_convreq.options_;
+    request_.key_ = base_convreq.key_;
     return *this;
   }
-  ConversionRequestBuilder &SetComposerData(
-      composer::ComposerData &&composer_data) {
+  ConversionRequestBuilder& SetConversionRequestView(
+      const ConversionRequest& base_convreq ABSL_ATTRIBUTE_LIFETIME_BOUND) {
+    DCHECK_LE(stage_, 1);
+    stage_ = 1;
+    // Enforces to use the view.
+    request_.composer_data_.set_view(*base_convreq.composer_data_);
+    request_.request_.set_view(*base_convreq.request_);
+    request_.context_.set_view(*base_convreq.context_);
+    request_.config_.set_view(*base_convreq.config_);
+    request_.options_ = base_convreq.options_;
+    request_.key_ = base_convreq.key_;
+    request_.history_result_.set_view(*base_convreq.history_result_);
+    return *this;
+  }
+  ConversionRequestBuilder& SetComposerData(
+      composer::ComposerData&& composer_data) {
     DCHECK_LE(stage_, 2);
     stage_ = 2;
-    composer_data_ = std::move(composer_data);
+    request_.composer_data_.move_from(std::move(composer_data));
     return *this;
   }
-  ConversionRequestBuilder &SetComposer(const composer::Composer &composer) {
+  ConversionRequestBuilder& SetComposer(const composer::Composer& composer) {
     DCHECK_LE(stage_, 2);
     stage_ = 2;
-    composer_data_ = composer.CreateComposerData();
+    request_.composer_data_.copy_from(composer.CreateComposerData());
     return *this;
   }
-  ConversionRequestBuilder &SetRequest(const commands::Request &request) {
+  ConversionRequestBuilder& SetRequest(const commands::Request& request) {
     DCHECK_LE(stage_, 2);
     stage_ = 2;
-    request_ = request;
+    request_.request_.copy_from(request);
     return *this;
   }
-  ConversionRequestBuilder &SetContext(const commands::Context &context) {
+  ConversionRequestBuilder& SetRequestView(
+      const commands::Request& request ABSL_ATTRIBUTE_LIFETIME_BOUND) {
     DCHECK_LE(stage_, 2);
     stage_ = 2;
-    context_ = context;
+    request_.request_.set_view(request);
     return *this;
   }
-  ConversionRequestBuilder &SetConfig(const config::Config &config) {
+  ConversionRequestBuilder& SetContext(const commands::Context& context) {
     DCHECK_LE(stage_, 2);
     stage_ = 2;
-    config_ = config;
+    request_.context_.copy_from(context);
     return *this;
   }
-  ConversionRequestBuilder &SetOptions(ConversionRequest::Options &&options) {
+  ConversionRequestBuilder& SetContextView(
+      const commands::Context& context ABSL_ATTRIBUTE_LIFETIME_BOUND) {
     DCHECK_LE(stage_, 2);
     stage_ = 2;
-    options_ = std::move(options);
+    request_.context_.set_view(context);
     return *this;
   }
-  ConversionRequestBuilder &SetRequestType(
+  ConversionRequestBuilder& SetConfig(const config::Config& config) {
+    DCHECK_LE(stage_, 2);
+    stage_ = 2;
+    request_.config_.copy_from(TrimConfig(config));
+    return *this;
+  }
+  ConversionRequestBuilder& SetConfigView(
+      const config::Config& config ABSL_ATTRIBUTE_LIFETIME_BOUND) {
+    DCHECK_LE(stage_, 2);
+    stage_ = 2;
+    request_.config_.set_view(config);
+    return *this;
+  }
+  ConversionRequestBuilder& SetHistoryResult(
+      const prediction::Result& history_result) {
+    DCHECK_LE(stage_, 2);
+    stage_ = 2;
+    request_.history_result_.copy_from(history_result);
+    return *this;
+  }
+  ConversionRequestBuilder& SetHistoryResultView(
+      const prediction::Result& history_result ABSL_ATTRIBUTE_LIFETIME_BOUND) {
+    DCHECK_LE(stage_, 2);
+    stage_ = 2;
+    request_.history_result_.set_view(history_result);
+    return *this;
+  }
+  ConversionRequestBuilder& SetEmptyHistoryResult() {
+    return SetHistoryResultView(prediction::Result::DefaultResult());
+  }
+  ConversionRequestBuilder& SetOptions(ConversionRequest::Options&& options) {
+    DCHECK_LE(stage_, 2);
+    stage_ = 2;
+    request_.options_ = std::move(options);
+    return *this;
+  }
+  ConversionRequestBuilder& SetRequestType(
       ConversionRequest::RequestType request_type) {
     DCHECK_LE(stage_, 3);
     stage_ = 3;
-    options_.request_type = request_type;
+    request_.options_.request_type = request_type;
     return *this;
   }
-  ConversionRequestBuilder &SetKey(absl::string_view key) {
+  // We cannot set empty key (SetKey("")). When key is empty,
+  // key is created from composer.
+  ConversionRequestBuilder& SetKey(absl::string_view key) {
     DCHECK_LE(stage_, 3);
     stage_ = 3;
-    strings::Assign(options_.key, key);
+    strings::Assign(request_.key_, key);
     return *this;
   }
 
  private:
+  // Remove unnecessary but potentially large options for ConversionRequest
+  // from Config and return it.
+  // TODO(b/365909808): Move this method to Session after updating the
+  // ConversionRequest constructor.
+  static config::Config TrimConfig(const config::Config& base_config) {
+    config::Config config = base_config;
+    config.clear_custom_keymap_table();
+    config.clear_custom_roman_table();
+    return config;
+  }
+
+  static std::string GetKey(
+      const composer::ComposerData& composer_data,
+      const ConversionRequest::RequestType type,
+      const ConversionRequest::ComposerKeySelection selection) {
+    if (type == ConversionRequest::CONVERSION &&
+        selection == ConversionRequest::CONVERSION_KEY) {
+      return composer_data.GetQueryForConversion();
+    }
+
+    if ((type == ConversionRequest::CONVERSION &&
+         selection == ConversionRequest::PREDICTION_KEY) ||
+        type == ConversionRequest::PREDICTION ||
+        type == ConversionRequest::SUGGESTION) {
+      return composer_data.GetQueryForPrediction();
+    }
+
+    if (type == ConversionRequest::PARTIAL_PREDICTION ||
+        type == ConversionRequest::PARTIAL_SUGGESTION) {
+      const std::string prediction_key = composer_data.GetQueryForConversion();
+      return std::string(
+          Util::Utf8SubString(prediction_key, 0, composer_data.GetCursor()));
+    }
+    return "";
+  }
+
   // The stage of the builder.
   // 0: No data set
   // 1: ConversionRequest set.
@@ -345,11 +530,7 @@ class ConversionRequestBuilder {
   // 3: RequestType, Key, as values of Options set.
   // 100: Build() called.
   int stage_ = 0;
-  composer::ComposerData composer_data_;
-  commands::Request request_;
-  commands::Context context_;
-  config::Config config_;
-  ConversionRequest::Options options_;
+  ConversionRequest request_;
 };
 
 }  // namespace mozc

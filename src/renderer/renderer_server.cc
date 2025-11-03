@@ -89,17 +89,16 @@ std::string GetServiceName() {
 class RendererServerSendCommand : public client::SendCommandInterface {
  public:
   RendererServerSendCommand() : receiver_handle_(0) {}
-  RendererServerSendCommand(const RendererServerSendCommand &) = delete;
-  RendererServerSendCommand &operator=(const RendererServerSendCommand &) =
+  RendererServerSendCommand(const RendererServerSendCommand&) = delete;
+  RendererServerSendCommand& operator=(const RendererServerSendCommand&) =
       delete;
   ~RendererServerSendCommand() override = default;
 
-  bool SendCommand(const mozc::commands::SessionCommand &command,
-                   mozc::commands::Output *output) override {
+  bool SendCommand(const mozc::commands::SessionCommand& command,
+                   mozc::commands::Output* output) override {
 #ifdef _WIN32
     if ((command.type() != commands::SessionCommand::SELECT_CANDIDATE) &&
-        (command.type() != commands::SessionCommand::HIGHLIGHT_CANDIDATE) &&
-        (command.type() != commands::SessionCommand::USAGE_STATS_EVENT)) {
+        (command.type() != commands::SessionCommand::HIGHLIGHT_CANDIDATE)) {
       // Unsupported command.
       return false;
     }
@@ -114,15 +113,9 @@ class RendererServerSendCommand : public client::SendCommandInterface {
       LOG(ERROR) << "RegisterWindowMessage failed: " << ::GetLastError();
       return false;
     }
-    if (command.type() == mozc::commands::SessionCommand::USAGE_STATS_EVENT) {
-      WPARAM type = static_cast<WPARAM>(command.type());
-      LPARAM event = static_cast<LPARAM>(command.usage_stats_event());
-      ::PostMessage(target, mozc_msg, type, event);
-    } else {  // SELECT_CANDIDATE or HIGHLIGHT_CANDIDATE
-      WPARAM type = static_cast<WPARAM>(command.type());
-      LPARAM id = static_cast<LPARAM>(command.id());
-      ::PostMessage(target, mozc_msg, type, id);
-    }
+    WPARAM type = static_cast<WPARAM>(command.type());
+    LPARAM id = static_cast<LPARAM>(command.id());
+    ::PostMessage(target, mozc_msg, type, id);
 #endif  // _WIN32
 
     // TODO(all): implementation for Mac/Linux
@@ -168,16 +161,15 @@ RendererServer::RendererServer()
   MOZC_VLOG(2) << "timeout is set to be : " << timeout_;
 
 #ifndef NDEBUG
-  config::Config config;
-  config::ConfigHandler::GetConfig(&config);
-  mozc::internal::SetConfigVLogLevel(config.verbose_level());
+  mozc::internal::SetConfigVLogLevel(
+      config::ConfigHandler::GetSharedConfig()->verbose_level());
 #endif  // NDEBUG
 }
 
 RendererServer::~RendererServer() = default;
 
 void RendererServer::SetRendererInterface(
-    RendererInterface *renderer_interface) {
+    RendererInterface* renderer_interface) {
   renderer_interface_ = renderer_interface;
   if (renderer_interface_ != nullptr) {
     renderer_interface_->SetSendCommandInterface(send_command_.get());
@@ -201,7 +193,7 @@ int RendererServer::StartServer() {
   return StartMessageLoop();
 }
 
-bool RendererServer::Process(absl::string_view request, std::string *response) {
+bool RendererServer::Process(absl::string_view request, std::string* response) {
   // No need to set the result code.
   response->clear();
 
@@ -211,7 +203,7 @@ bool RendererServer::Process(absl::string_view request, std::string *response) {
 }
 
 bool RendererServer::ExecCommandInternal(
-    const commands::RendererCommand &command) {
+    const commands::RendererCommand& command) {
   if (renderer_interface_ == nullptr) {
     LOG(ERROR) << "renderer_interface is nullptr";
     return false;

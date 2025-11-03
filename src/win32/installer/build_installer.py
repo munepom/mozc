@@ -76,10 +76,15 @@ def run_wix4(args) -> None:
   Args:
     args: args
   """
-  vs_env_vars = vs_util.get_vs_env_vars('x64')
-  redist_root = pathlib.Path(vs_env_vars['VCTOOLSREDISTDIR']).resolve()
-  redist_x86 = redist_root.joinpath('x86').joinpath('Microsoft.VC143.CRT')
-  redist_x64 = redist_root.joinpath('x64').joinpath('Microsoft.VC143.CRT')
+  arch = args.arch
+
+  # 'VCTOOLSREDISTDIR' environment variable is the same among x86, x64 and arm64
+  # architectures, so just using 'x64' should be fine here.
+  redist_root = pathlib.Path(
+      vs_util.get_vs_env_vars('x64')['VCTOOLSREDISTDIR']
+  ).resolve()
+
+  redist_64bit = redist_root.joinpath(arch).joinpath('Microsoft.VC143.CRT')
   version_file = pathlib.Path(args.version_file).resolve()
   version = mozc_version.MozcVersion(version_file)
   credit_file = pathlib.Path(args.credit_file).resolve()
@@ -88,9 +93,6 @@ def run_wix4(args) -> None:
   icon_path = pathlib.Path(args.icon_path).resolve()
   mozc_tip32 = pathlib.Path(args.mozc_tip32).resolve()
   mozc_tip64 = pathlib.Path(args.mozc_tip64).resolve()
-  mozc_tip64_pdb = mozc_tip64.with_suffix('.pdb')
-  if args.mozc_tip64_pdb:
-    mozc_tip64_pdb = pathlib.Path(args.mozc_tip64_pdb).resolve()
   mozc_broker = pathlib.Path(args.mozc_broker).resolve()
   mozc_server = pathlib.Path(args.mozc_server).resolve()
   mozc_cache_service = pathlib.Path(args.mozc_cache_service).resolve()
@@ -121,7 +123,7 @@ def run_wix4(args) -> None:
       f'{wix_path}',
       'build',
       '-nologo',
-      '-arch', 'x64',
+      '-arch', arch,
       '-define', f'MozcVersion={version.GetVersionString()}',
       '-define', f'UpgradeCode={upgrade_code}',
       '-define', f'OmahaGuid={omaha_guid}',
@@ -129,12 +131,10 @@ def run_wix4(args) -> None:
       '-define', f'OmahaClientStateKey={omaha_clientstate_key}',
       '-define', f'OmahaChannelType={omaha_channel_type}',
       '-define', f'VSConfigurationName={vs_configuration_name}',
-      '-define', f'ReleaseRedistCrt32Dir={redist_x86}',
-      '-define', f'ReleaseRedistCrt64Dir={redist_x64}',
+      '-define', f'ReleaseRedistCrt64Dir={redist_64bit}',
       '-define', f'AddRemoveProgramIconPath={icon_path}',
       '-define', f'MozcTIP32Path={mozc_tip32}',
       '-define', f'MozcTIP64Path={mozc_tip64}',
-      '-define', f'MozcTIP64PdbPath={mozc_tip64_pdb}',
       '-define', f'MozcBroker64Path={mozc_broker}',
       '-define', f'MozcServer64Path={mozc_server}',
       '-define', f'MozcCacheService64Path={mozc_cache_service}',
@@ -147,6 +147,13 @@ def run_wix4(args) -> None:
       '-out', args.output,
       '-src', args.wxs_path,
   ]
+  if args.mozc_tip64arm and args.mozc_tip64x:
+    mozc_tip64arm = pathlib.Path(args.mozc_tip64arm).resolve()
+    mozc_tip64x = pathlib.Path(args.mozc_tip64x).resolve()
+    commands += [
+        '-define', f'MozcTIP64ArmPath={mozc_tip64arm}',
+        '-define', f'MozcTIP64XPath={mozc_tip64x}',
+    ]
   exec_command(commands, cwd=os.getcwd())
 
 
@@ -161,7 +168,8 @@ def main():
   parser.add_argument('--mozc_cache_service', type=str)
   parser.add_argument('--mozc_tip32', type=str)
   parser.add_argument('--mozc_tip64', type=str)
-  parser.add_argument('--mozc_tip64_pdb', type=str)
+  parser.add_argument('--mozc_tip64arm', type=str)
+  parser.add_argument('--mozc_tip64x', type=str)
   parser.add_argument('--custom_action', type=str)
   parser.add_argument('--icon_path', type=str)
   parser.add_argument('--credit_file', type=str)
@@ -171,6 +179,12 @@ def main():
   parser.add_argument('--branding', type=str)
   parser.add_argument(
       '--debug_build', dest='debug_build', default=False, action='store_true'
+  )
+  parser.add_argument(
+      '--arch',
+      dest='arch',
+      default='x64',
+      choices=['x64', 'arm64'],
   )
 
   args = parser.parse_args()

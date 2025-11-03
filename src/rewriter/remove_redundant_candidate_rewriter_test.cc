@@ -29,6 +29,7 @@
 
 #include "rewriter/remove_redundant_candidate_rewriter.h"
 
+#include "converter/candidate.h"
 #include "converter/segments.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
@@ -39,9 +40,9 @@ namespace mozc {
 TEST(RemoveRedundantCandidateRewriterTest, RemoveTest) {
   RemoveRedundantCandidateRewriter rewriter;
   Segments segments;
-  Segment *segment = segments.add_segment();
+  Segment* segment = segments.add_segment();
   segment->set_key("a");
-  Segment::Candidate *candidate = segment->add_candidate();
+  converter::Candidate* candidate = segment->add_candidate();
   candidate->key = "a";
   candidate->value = "a";
 
@@ -53,9 +54,9 @@ TEST(RemoveRedundantCandidateRewriterTest, RemoveTest) {
 TEST(RemoveRedundantCandidateRewriterTest, NoRemoveTest) {
   RemoveRedundantCandidateRewriter rewriter;
   Segments segments;
-  Segment *segment = segments.add_segment();
+  Segment* segment = segments.add_segment();
   segment->set_key("a");
-  Segment::Candidate *candidate = segment->add_candidate();
+  converter::Candidate* candidate = segment->add_candidate();
   candidate->key = "a";
   candidate->value = "aa";
 

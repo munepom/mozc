@@ -32,7 +32,6 @@
 
 #include <cstdint>
 
-#include "absl/base/attributes.h"
 #include "absl/types/span.h"
 
 namespace mozc::dictionary {
@@ -94,13 +93,11 @@ namespace mozc::dictionary {
 // |                                           |
 class PosMatcher {
  public:
-  PosMatcher() = default;
+  PosMatcher() = delete;
   explicit PosMatcher(absl::Span<const uint16_t> data) : data_(data) {}
 
-  PosMatcher(const PosMatcher &) = default;
-  PosMatcher &operator=(const PosMatcher &) = default;
-
-  void Set(absl::Span<const uint16_t> data) { data_ = data; }
+  PosMatcher(const PosMatcher&) = default;
+  PosMatcher& operator=(const PosMatcher&) = default;
 
  private:
   // Used in pos_matcher_impl.inc.
@@ -115,7 +112,7 @@ constexpr bool PosMatcher::IsRuleInTable(const int index,
                                          const uint16_t id) const {
   // kLidTableSize is defined in pos_matcher_impl.inc.
   const uint16_t offset = data_[kLidTableSize + index];
-  for (const uint16_t *ptr = data_.data() + offset; *ptr != 0xFFFFu; ptr += 2) {
+  for (const uint16_t* ptr = data_.data() + offset; *ptr != 0xFFFFu; ptr += 2) {
     if (id >= *ptr && id <= *(ptr + 1)) {
       return true;
     }

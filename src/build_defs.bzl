@@ -42,7 +42,13 @@ See also: https://bazel.build/rules/bzl-style#rules
 
 """
 
+load("@bazel_skylib//rules:select_file.bzl", "select_file")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application", "macos_bundle", "macos_unit_test")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_import.bzl", "cc_import")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
 load("@windows_sdk//:windows_sdk_rules.bzl", "windows_resource")
 load(
     "//:config.bzl",
@@ -82,7 +88,7 @@ def mozc_cc_library(deps = [], copts = [], visibility = None, **kwargs):
     """
     cc_library wrapper adding //:macro dependecny.
     """
-    native.cc_library(
+    cc_library(
         deps = deps + ["//:macro"],
         copts = copts + _copts_unsigned_char(),
         visibility = _update_visibility(visibility),
@@ -98,7 +104,7 @@ def mozc_cc_binary(deps = [], copts = [], **kwargs):
     """
     cc_binary wrapper adding //:macro dependecny.
     """
-    native.cc_binary(
+    cc_binary(
         deps = deps + ["//:macro"],
         copts = copts + _copts_unsigned_char(),
         **kwargs
@@ -119,7 +125,7 @@ def mozc_cc_test(name, tags = [], deps = [], copts = [], **kwargs):
       copts: copts for cc_test.
       **kwargs: other args for cc_test.
     """
-    native.cc_test(
+    cc_test(
         name = name,
         tags = tags,
         deps = deps + ["//:macro"],
@@ -204,23 +210,63 @@ register_extension_info(
     label_regex_for_dep = "{extension_name}",
 )
 
+def _append_if_absent(target_list, item):
+    """Append the given item only when it is absent in the target.
+
+    Args:
+      target_list: a String list to be checked.
+      item: a String item that is to be made sure to exist in the list.
+    Returns:
+      list: target_list itself or a new list, where the given item exists.
+    """
+    if item in target_list:
+        return target_list
+    return target_list + [item]
+
+def _remove_if_present(target_list, item):
+    """Remove the given item if exists.
+
+    Args:
+      target_list: a String list to be checked.
+      item: a String item that is to be made sure to not exist in the list.
+    Returns:
+      list: target_list itself or a new list, where the given item does not
+            exist.
+    """
+    return [x for x in target_list if x != item]
+
 def _win_executable_transition_impl(
-        settings,  # @unused
+        settings,
         attr):
-    features = []
+    features = settings["//command_line_option:features"]
+    platforms = settings["//command_line_option:platforms"]
+
+    features = _append_if_absent(features, "generate_pdb_file")
+
     if attr.static_crt:
-        features = ["static_link_msvcrt"]
+        features = _remove_if_present(features, "dynamic_link_msvcrt")
+        features = _append_if_absent(features, "static_link_msvcrt")
+    else:
+        features = _remove_if_present(features, "static_link_msvcrt")
+        features = _append_if_absent(features, "dynamic_link_msvcrt")
+
+    if attr.platform:
+        platforms = [attr.platform]
+
     return {
         "//command_line_option:features": features,
-        "//command_line_option:cpu": attr.cpu,
+        "//command_line_option:platforms": platforms,
     }
 
 _win_executable_transition = transition(
     implementation = _win_executable_transition_impl,
-    inputs = [],
+    inputs = [
+        "//command_line_option:features",
+        "//command_line_option:platforms",
+    ],
     outputs = [
         "//command_line_option:features",
-        "//command_line_option:cpu",
+        "//command_line_option:platforms",
     ],
 )
 
@@ -238,17 +284,15 @@ def _mozc_win_build_rule_impl(ctx):
         target_file = input_file,
         is_executable = True,
     )
-    return [DefaultInfo(
-        files = depset([output]),
-        executable = output,
-    )]
-
-# The follwoing CPU values are mentioned in https://bazel.build/configure/windows#build_cpp
-CPU = struct(
-    ARM64 = "arm64_windows",  # aarch64 (64-bit) environment
-    X64 = "x64_windows",  # x86-64 (64-bit) environment
-    X86 = "x64_x86_windows",  # x86 (32-bit) environment
-)
+    return [
+        DefaultInfo(
+            files = depset([output]),
+            executable = output,
+        ),
+        OutputGroupInfo(
+            pdb_file = depset(ctx.files.pdb_file),
+        ),
+    ]
 
 _mozc_win_build_rule = rule(
     implementation = _mozc_win_build_rule_impl,
@@ -262,75 +306,14 @@ _mozc_win_build_rule = rule(
             doc = "the actual Bazel target to be built.",
             mandatory = True,
         ),
+        "pdb_file": attr.label(
+            allow_files = True,
+            mandatory = True,
+        ),
         "static_crt": attr.bool(),
-        "cpu": attr.string(),
+        "platform": attr.label(),
     },
 )
-
-# Define a transition target with the given build target with the given build configurations.
-#
-# For instance, the following code creates a target "my_target" with setting "cpu" as "x64_windows"
-# and setting "static_link_msvcrt" feature.
-#
-#   mozc_win_build_rule(
-#       name = "my_target",
-#       cpu = CPU.X64,
-#       static_crt = True,
-#       target = "//bath/to/target:my_target",
-#   )
-#
-# See the following page for the details on transition.
-# https://bazel.build/rules/lib/builtins/transition
-def mozc_win_build_target(
-        name,
-        target,
-        cpu = CPU.X64,
-        static_crt = False,
-        target_compatible_with = [],
-        tags = [],
-        **kwargs):
-    """Define a transition target with the given build target with the given build configurations.
-
-    The following code creates a target "my_target" with setting "cpu" as "x64_windows" and setting
-    "static_link_msvcrt" feature.
-
-      mozc_win_build_target(
-          name = "my_target",
-          cpu = CPU.X64,
-          static_crt = True,
-          target = "//bath/to/target:my_target",
-      )
-
-    Args:
-      name: name of the target.
-      target: the actual Bazel target to be built with the specified configurations.
-      cpu: CPU type of the target.
-      static_crt: True if the target should be built with static CRT.
-      target_compatible_with: optional. Visibility for the unit test target.
-      tags: optional. Tags for both the library and unit test targets.
-      **kwargs: other arguments passed to mozc_objc_library.
-    """
-    mandatory_target_compatible_with = [
-        "@platforms//os:windows",
-    ]
-    for item in mandatory_target_compatible_with:
-        if item not in target_compatible_with:
-            target_compatible_with.append(item)
-
-    mandatory_tags = MOZC_TAGS.WIN_ONLY
-    for item in mandatory_tags:
-        if item not in tags:
-            tags.append(item)
-
-    _mozc_win_build_rule(
-        name = name,
-        target = target,
-        cpu = cpu,
-        static_crt = static_crt,
-        target_compatible_with = target_compatible_with,
-        tags = tags,
-        **kwargs
-    )
 
 def mozc_win32_cc_prod_binary(
         name,
@@ -340,7 +323,7 @@ def mozc_win32_cc_prod_binary(
         features = None,
         linkopts = [],
         linkshared = False,
-        cpu = CPU.X64,
+        platform = None,
         static_crt = False,
         tags = MOZC_TAGS.WIN_ONLY,
         win_def_file = None,
@@ -364,7 +347,7 @@ def mozc_win32_cc_prod_binary(
       features: features to be passed to mozc_cc_binary.
       linkopts: linker options to build the executable.
       linkshared: True if the target is a shared library (DLL).
-      cpu: optional. The target CPU architecture.
+      platform: optional. The platform to be overriden.
       static_crt: optional. True if the target should be built with static CRT.
       tags: optional. Tags for both the library and unit test targets.
       win_def_file: optional. win32 def file to define exported functions.
@@ -372,30 +355,104 @@ def mozc_win32_cc_prod_binary(
       visibility: optional. The visibility of the target.
       **kwargs: other arguments passed to mozc_cc_binary.
     """
-    target_name = name + "_cc_binary"
+    target_name = executable_name_map.get(BRANDING, None)
+    if target_name == None:
+        return
+
+    intermediate_name = None
+    if target_name.endswith(".exe"):
+        # When the targete name is "foobar.exe", then "foobar.exe.dll" will be
+        # generated.
+        intermediate_name = target_name
+    elif target_name.endswith(".dll"):
+        # When the targete name is "foobar.dll", then "foobar.pdb" will be
+        # generated. To produce "foobar.dll.pdb", the target name needs to be
+        # something like "foobar.dll.dll".
+        intermediate_name = target_name + ".dll"
+        linkshared = True
+    else:
+        return
+
+    modified_linkopts = []
+    modified_linkopts.extend(linkopts)
+    modified_linkopts.extend([
+        "/DEBUG:FULL",
+        "/PDBALTPATH:%_PDB%",
+    ])
+
+    LOAD_LIBRARY_SEARCH_APPLICATION_DIR = 0x200
+    LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x800
+    load_flags = LOAD_LIBRARY_SEARCH_SYSTEM32
+    if not linkshared:
+        # We build *.exe with dynamic CRT and deploy CRT DLLs into the
+        # application dir. Thus LOAD_LIBRARY_SEARCH_APPLICATION_DIR is also
+        # necessary.
+        load_flags += LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+    modified_linkopts.append("/DEPENDENTLOADFLAG:0x%X" % load_flags)
+
     mozc_cc_binary(
-        name = target_name,
+        name = intermediate_name,
         srcs = srcs,
         deps = deps,
         features = features,
-        linkopts = linkopts,
+        # '/CETCOMPAT' is available only on x86/x64 architectures.
+        linkopts = modified_linkopts + select({
+            "@platforms//cpu:x86_32": ["/CETCOMPAT"],
+            "@platforms//cpu:x86_64": ["/CETCOMPAT"],
+            "//conditions:default": [],
+        }),
         linkshared = linkshared,
         tags = tags,
         target_compatible_with = target_compatible_with,
-        visibility = visibility,
+        visibility = ["//visibility:private"],
         win_def_file = win_def_file,
         **kwargs
     )
 
-    mozc_win_build_target(
+    mandatory_target_compatible_with = [
+        "@platforms//os:windows",
+    ]
+    for item in mandatory_target_compatible_with:
+        if item not in target_compatible_with:
+            target_compatible_with.append(item)
+
+    mandatory_tags = MOZC_TAGS.WIN_ONLY
+    for item in mandatory_tags:
+        if item not in tags:
+            tags.append(item)
+
+    native.filegroup(
+        name = intermediate_name + "_pdb_file",
+        srcs = [intermediate_name],
+        output_group = "pdb_file",
+        visibility = ["//visibility:private"],
+    )
+
+    _mozc_win_build_rule(
         name = name,
-        cpu = cpu,
+        pdb_file = intermediate_name + "_pdb_file",
+        platform = platform,
         static_crt = static_crt,
         tags = tags,
-        target = target_name,
+        target = intermediate_name,
         target_compatible_with = target_compatible_with,
         visibility = visibility,
         **kwargs
+    )
+
+    native.filegroup(
+        name = name + "_pdb_file",
+        srcs = [name],
+        output_group = "pdb_file",
+        target_compatible_with = target_compatible_with,
+        visibility = ["//visibility:private"],
+    )
+
+    select_file(
+        name = name + ".pdb",
+        srcs = name + "_pdb_file",
+        subpath = target_name + ".pdb",
+        visibility = visibility,
     )
 
 def mozc_cc_win32_library(
@@ -437,6 +494,8 @@ def mozc_cc_win32_library(
         deps = deps,
         win_def_file = win_def_file,
         linkshared = 1,
+        # Workaround for https://github.com/google/mozc/issues/1224
+        linkopts = ["/DEBUG"],
         tags = tags,
         target_compatible_with = target_compatible_with,
         visibility = ["//visibility:private"],
@@ -451,8 +510,7 @@ def mozc_cc_win32_library(
         target_compatible_with = target_compatible_with,
         visibility = ["//visibility:private"],
     )
-
-    native.cc_import(
+    cc_import(
         name = cc_import_taget_name,
         interface_library = ":" + filegroup_target_name,
         shared_library = ":" + cc_binary_target_name,
@@ -553,14 +611,14 @@ def mozc_objc_library(
         copts = [],
         tags = [],
         **kwargs):
-    native.objc_library(
+    objc_library(
         name = name,
         srcs = srcs,
         hdrs = hdrs,
         deps = deps + [
             "//:macro",
         ],
-        copts = copts + ["-funsigned-char", "-std=c++17"],
+        copts = copts + ["-funsigned-char"],
         target_compatible_with = select({
             "@platforms//os:macos": [],
             "@platforms//os:ios": [],

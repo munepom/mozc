@@ -32,6 +32,9 @@
 #include <cstdint>
 #include <string>
 
+#include "absl/strings/string_view.h"
+#include "converter/attribute.h"
+#include "converter/candidate.h"
 #include "converter/segments.h"
 #include "data_manager/testing/mock_data_manager.h"
 #include "dictionary/pos_matcher.h"
@@ -39,48 +42,67 @@
 #include "protocol/config.pb.h"
 #include "protocol/user_dictionary_storage.pb.h"
 #include "testing/gunit.h"
+#include "testing/test_peer.h"
 
 namespace mozc {
 namespace converter {
 
+class HistoryReconstructorTestPeer : testing::TestPeer<HistoryReconstructor> {
+ public:
+  explicit HistoryReconstructorTestPeer(HistoryReconstructor& reconstructor)
+      : testing::TestPeer<HistoryReconstructor>(reconstructor) {}
+
+  PEER_METHOD(GetLastConnectivePart);
+};
+
 TEST(HistoryReconstructorTest, GetLastConnectivePart) {
   const testing::MockDataManager data_manager;
   const dictionary::PosMatcher pos_matcher(data_manager.GetPosMatcherData());
-  const converter::HistoryReconstructor reconstructor(pos_matcher);
+  converter::HistoryReconstructor reconstructor(pos_matcher);
+  HistoryReconstructorTestPeer reconstructor_peer(reconstructor);
 
   {
     std::string key;
     std::string value;
     uint16_t id = 0;
-    EXPECT_FALSE(reconstructor.GetLastConnectivePart("", &key, &value, &id));
-    EXPECT_FALSE(reconstructor.GetLastConnectivePart(" ", &key, &value, &id));
-    EXPECT_FALSE(reconstructor.GetLastConnectivePart("  ", &key, &value, &id));
+    EXPECT_FALSE(
+        reconstructor_peer.GetLastConnectivePart("", &key, &value, &id));
+    EXPECT_FALSE(
+        reconstructor_peer.GetLastConnectivePart(" ", &key, &value, &id));
+    EXPECT_FALSE(
+        reconstructor_peer.GetLastConnectivePart("  ", &key, &value, &id));
   }
 
   {
     std::string key;
     std::string value;
     uint16_t id = 0;
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("a", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("a", &key, &value, &id));
     EXPECT_EQ(key, "a");
     EXPECT_EQ(value, "a");
     EXPECT_EQ(id, pos_matcher.GetUniqueNounId());
 
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("a ", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("a ", &key, &value, &id));
     EXPECT_EQ(key, "a");
     EXPECT_EQ(value, "a");
 
-    EXPECT_FALSE(reconstructor.GetLastConnectivePart("a  ", &key, &value, &id));
+    EXPECT_FALSE(
+        reconstructor_peer.GetLastConnectivePart("a  ", &key, &value, &id));
 
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("a ", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("a ", &key, &value, &id));
     EXPECT_EQ(key, "a");
     EXPECT_EQ(value, "a");
 
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("a10a", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("a10a", &key, &value, &id));
     EXPECT_EQ(key, "a");
     EXPECT_EQ(value, "a");
 
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("ａ", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("ａ", &key, &value, &id));
     EXPECT_EQ(key, "a");
     EXPECT_EQ(value, "ａ");
   }
@@ -89,17 +111,19 @@ TEST(HistoryReconstructorTest, GetLastConnectivePart) {
     std::string key;
     std::string value;
     uint16_t id = 0;
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("10", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("10", &key, &value, &id));
     EXPECT_EQ(key, "10");
     EXPECT_EQ(value, "10");
     EXPECT_EQ(id, pos_matcher.GetNumberId());
 
     EXPECT_TRUE(
-        reconstructor.GetLastConnectivePart("10a10", &key, &value, &id));
+        reconstructor_peer.GetLastConnectivePart("10a10", &key, &value, &id));
     EXPECT_EQ(key, "10");
     EXPECT_EQ(value, "10");
 
-    EXPECT_TRUE(reconstructor.GetLastConnectivePart("１０", &key, &value, &id));
+    EXPECT_TRUE(
+        reconstructor_peer.GetLastConnectivePart("１０", &key, &value, &id));
     EXPECT_EQ(key, "10");
     EXPECT_EQ(value, "１０");
   }
@@ -108,7 +132,8 @@ TEST(HistoryReconstructorTest, GetLastConnectivePart) {
     std::string key;
     std::string value;
     uint16_t id = 0;
-    EXPECT_FALSE(reconstructor.GetLastConnectivePart("あ", &key, &value, &id));
+    EXPECT_FALSE(
+        reconstructor_peer.GetLastConnectivePart("あ", &key, &value, &id));
   }
 }
 
@@ -117,17 +142,17 @@ TEST(HistoryReconstructorTest, ReconstructHistory) {
   const dictionary::PosMatcher pos_matcher(data_manager.GetPosMatcherData());
   const converter::HistoryReconstructor reconstructor(pos_matcher);
 
-  constexpr char kTen[] = "１０";
+  constexpr absl::string_view kTen = "１０";
 
   Segments segments;
   EXPECT_TRUE(reconstructor.ReconstructHistory(kTen, &segments));
   EXPECT_EQ(segments.segments_size(), 1);
-  const Segment &segment = segments.segment(0);
+  const Segment& segment = segments.segment(0);
   EXPECT_EQ(segment.segment_type(), Segment::HISTORY);
   EXPECT_EQ(segment.key(), "10");
   EXPECT_EQ(segment.candidates_size(), 1);
-  const Segment::Candidate &candidate = segment.candidate(0);
-  EXPECT_EQ(candidate.attributes, Segment::Candidate::NO_LEARNING);
+  const Candidate& candidate = segment.candidate(0);
+  EXPECT_EQ(candidate.attributes, Attribute::NO_LEARNING);
   EXPECT_EQ(candidate.content_key, "10");
   EXPECT_EQ(candidate.key, "10");
   EXPECT_EQ(candidate.content_value, kTen);

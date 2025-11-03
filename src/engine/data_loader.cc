@@ -41,7 +41,6 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/time.h"
-#include "base/file_util.h"
 #include "base/hash.h"
 #include "base/thread.h"
 #include "data_manager/data_manager.h"
@@ -50,22 +49,20 @@
 
 namespace mozc {
 namespace {
-EngineReloadResponse::Status ConvertStatus(DataManager::Status status) {
-  switch (status) {
-    case DataManager::Status::OK:
+EngineReloadResponse::Status ConvertStatus(absl::Status status) {
+  switch (status.code()) {
+    case absl::StatusCode::kOk:
       return EngineReloadResponse::RELOAD_READY;
-    case DataManager::Status::ENGINE_VERSION_MISMATCH:
+    case absl::StatusCode::kFailedPrecondition:
       return EngineReloadResponse::ENGINE_VERSION_MISMATCH;
-    case DataManager::Status::DATA_MISSING:
+    case absl::StatusCode::kNotFound:
       return EngineReloadResponse::DATA_MISSING;
-    case DataManager::Status::DATA_BROKEN:
+    case absl::StatusCode::kDataLoss:
       return EngineReloadResponse::DATA_BROKEN;
-    case DataManager::Status::MMAP_FAILURE:
+    case absl::StatusCode::kPermissionDenied:
       return EngineReloadResponse::MMAP_FAILURE;
-    case DataManager::Status::UNKNOWN:
-      return EngineReloadResponse::UNKNOWN_ERROR;
     default:
-      LOG(DFATAL) << "Should not reach here";
+      break;
   }
   return EngineReloadResponse::UNKNOWN_ERROR;
 }
@@ -73,19 +70,19 @@ EngineReloadResponse::Status ConvertStatus(DataManager::Status status) {
 
 DataLoader::~DataLoader() { Wait(); }
 
-uint64_t DataLoader::GetRequestId(const EngineReloadRequest &request) const {
-  return Fingerprint(request.SerializeAsString());
+uint64_t DataLoader::GetRequestId(const EngineReloadRequest& request) const {
+  return CityFingerprint(request.SerializeAsString());
 }
 
 std::optional<DataLoader::RequestData> DataLoader::GetPendingRequestData()
     const {
-  absl::ReaderMutexLock lock(&mutex_);
+  absl::ReaderMutexLock lock(mutex_);
 
   if (requests_.empty()) {
     return std::nullopt;
   }
 
-  const RequestData &top = requests_.front();
+  const RequestData& top = requests_.front();
   if (top.id == current_request_id_) {
     return std::nullopt;
   }
@@ -93,8 +90,8 @@ std::optional<DataLoader::RequestData> DataLoader::GetPendingRequestData()
   return top;
 }
 
-bool DataLoader::RegisterRequest(const EngineReloadRequest &request) {
-  absl::WriterMutexLock lock(&mutex_);
+bool DataLoader::RegisterRequest(const EngineReloadRequest& request) {
+  absl::WriterMutexLock lock(mutex_);
 
   const uint64_t id = GetRequestId(request);
 
@@ -110,7 +107,7 @@ bool DataLoader::RegisterRequest(const EngineReloadRequest &request) {
   ++sequence_id_;
 
   auto it = std::find_if(requests_.begin(), requests_.end(),
-                         [id](const RequestData &v) { return v.id == id; });
+                         [id](const RequestData& v) { return v.id == id; });
   if (it != requests_.end()) {
     it->sequence_id = sequence_id_;
   } else {
@@ -121,7 +118,7 @@ bool DataLoader::RegisterRequest(const EngineReloadRequest &request) {
   // Sorts the requests so requests[0] stores the request with
   // the highest priority.
   std::sort(requests_.begin(), requests_.end(),
-            [](const RequestData &lhs, const RequestData &rhs) {
+            [](const RequestData& lhs, const RequestData& rhs) {
               return (lhs.request.priority() < rhs.request.priority() ||
                       (lhs.request.priority() == rhs.request.priority() &&
                        lhs.sequence_id > rhs.sequence_id));
@@ -132,62 +129,57 @@ bool DataLoader::RegisterRequest(const EngineReloadRequest &request) {
   return current_request_id_ != requests_.front().id;
 }
 
-void DataLoader::ReportLoadFailure(const DataLoader::RequestData &request) {
-  absl::WriterMutexLock lock(&mutex_);
+void DataLoader::ReportLoadFailure(const DataLoader::RequestData& request) {
+  absl::WriterMutexLock lock(mutex_);
   LOG(ERROR) << "Failed to load data: " << request;
   const uint64_t id = request.id;
   const auto it =
       std::remove_if(requests_.begin(), requests_.end(),
-                     [id](const RequestData &v) { return v.id == id; });
+                     [id](const RequestData& v) { return v.id == id; });
   if (it != requests_.end()) {
     requests_.erase(it, requests_.end());
     unregistered_.emplace(id);
   }
 }
 
-void DataLoader::ReportLoadSuccess(const DataLoader::RequestData &request) {
-  absl::WriterMutexLock lock(&mutex_);
+void DataLoader::ReportLoadSuccess(const DataLoader::RequestData& request) {
+  absl::WriterMutexLock lock(mutex_);
   LOG(INFO) << "New data is loaded: " << request;
   current_request_id_ = request.id;
 }
 
 std::unique_ptr<DataLoader::Response> DataLoader::BuildResponse(
-    const DataLoader::RequestData &request_data) {
+    const DataLoader::RequestData& request_data) {
   auto result = std::make_unique<DataLoader::Response>();
   result->response.set_status(EngineReloadResponse::DATA_MISSING);
 
-  const EngineReloadRequest &request = request_data.request;
+  const EngineReloadRequest& request = request_data.request;
   *result->response.mutable_request() = request;
 
   // Initializes DataManager
-  auto data_manager = std::make_unique<DataManager>();
-  {
-    const DataManager::Status status =
-        request.has_magic_number()
-            ? data_manager->InitFromFile(request.file_path(),
-                                         request.magic_number())
-            : data_manager->InitFromFile(request.file_path());
-    if (status != DataManager::Status::OK) {
-      LOG(ERROR) << "Failed to load data [" << status << "] " << request_data;
-      result->response.set_status(ConvertStatus(status));
-      DCHECK_NE(result->response.status(), EngineReloadResponse::RELOAD_READY);
-      return result;
-    }
+  absl::StatusOr<std::unique_ptr<const DataManager>> data_manager =
+      request.has_magic_number()
+          ? DataManager::CreateFromFile(request.file_path(),
+                                        request.magic_number())
+          : DataManager::CreateFromFile(request.file_path());
+  if (!data_manager.ok()) {
+    LOG(ERROR) << "Failed to load data [" << data_manager << "] "
+               << request_data;
+    result->response.set_status(ConvertStatus(data_manager.status()));
+    DCHECK_NE(result->response.status(), EngineReloadResponse::RELOAD_READY);
+    return result;
   }
 
-  auto modules = std::make_unique<engine::Modules>();
-  {
-    const absl::Status status = modules->Init(std::move(data_manager));
-    if (!status.ok()) {
-      LOG(ERROR) << "Failed to load modules [" << status << "] "
-                 << request_data;
-      result->response.set_status(EngineReloadResponse::DATA_BROKEN);
-      return result;
-    }
+  absl::StatusOr<std::unique_ptr<engine::Modules>> modules =
+      engine::Modules::Create(std::move(data_manager.value()));
+  if (!modules.ok()) {
+    LOG(ERROR) << "Failed to load modules [" << modules << "] " << request_data;
+    result->response.set_status(EngineReloadResponse::DATA_BROKEN);
+    return result;
   }
 
   result->response.set_status(EngineReloadResponse::RELOAD_READY);
-  result->modules = std::move(modules);
+  result->modules = std::move(modules.value());
 
   return result;
 }
@@ -231,7 +223,7 @@ void DataLoader::StartReloadLoop(DataLoader::ReloadedCallback callback) {
 }
 
 // This method is called only by the main engine thread.
-bool DataLoader::StartNewDataBuildTask(const EngineReloadRequest &request,
+bool DataLoader::StartNewDataBuildTask(const EngineReloadRequest& request,
                                        DataLoader::ReloadedCallback callback) {
   if (!RegisterRequest(request)) {
     return false;

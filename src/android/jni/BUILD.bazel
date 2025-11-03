@@ -58,7 +58,6 @@ mozc_cc_library(
         "//engine",
         "//protocol:commands_cc_proto",
         "//session:session_handler",
-        "//session:session_usage_observer",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/random",
@@ -71,6 +70,11 @@ mozc_cc_library(
 mozc_cc_binary(
     name = "mozc",
     srcs = [],
+    linkopts = [
+        # 16 KB page size support is a requirement to target Android 15+.
+        # https://developer.android.com/guide/practices/page-sizes
+        "-Wl,-z,max-page-size=16384",
+    ],
     linkshared = 1,
     tags = MOZC_TAGS.ANDROID_ONLY,
     target_compatible_with = _TARGET_COMPATIBLE_WITH,

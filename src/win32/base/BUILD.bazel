@@ -41,9 +41,7 @@ load(
     "features_gdi",
 )
 
-package(
-    default_visibility = ["//win32:__subpackages__"],
-)
+package(default_visibility = ["//win32:__subpackages__"])
 
 mozc_cc_library(
     name = "config_snapshot",
@@ -148,8 +146,8 @@ mozc_cc_library(
     target_compatible_with = ["@platforms//os:windows"],
     deps = [
         "//base:util",
+        "//bazel/win32:user32",
         "@com_google_absl//absl/algorithm:container",
-        "@com_google_absl//absl/base",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/log:check",
     ],
@@ -234,7 +232,6 @@ mozc_cc_test(
     deps = [
         ":keyboard",
         "//testing:gunit_main",
-        "@com_google_absl//absl/base",
     ],
 )
 
@@ -268,6 +265,7 @@ mozc_cc_test(
         ":keyboard",
         ":keyevent_handler",
         "//base:version",
+        "//base/strings:zstring_view",
         "//client",
         "//client:client_interface",
         "//composer:key_event_util",

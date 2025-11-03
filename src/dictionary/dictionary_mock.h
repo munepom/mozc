@@ -55,30 +55,28 @@ class MockDictionary : public DictionaryInterface {
   MOCK_METHOD(bool, HasValue, (absl::string_view value), (const, override));
   MOCK_METHOD(void, LookupPredictive,
               (absl::string_view key,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(void, LookupPrefix,
               (absl::string_view key,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(void, LookupExact,
               (absl::string_view key,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(void, LookupReverse,
               (absl::string_view str,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(bool, LookupComment,
               (absl::string_view key, absl::string_view value,
-               const ConversionRequest &conversion_request,
-               std::string *comment),
+               const ConversionRequest& conversion_request,
+               std::string* comment),
               (const, override));
   MOCK_METHOD(void, PopulateReverseLookupCache, (absl::string_view str),
               (const, override));
   MOCK_METHOD(void, ClearReverseLookupCache, (), (const, override));
-  MOCK_METHOD(bool, Sync, (), (override));
-  MOCK_METHOD(bool, Reload, (), (override));
 };
 
 class MockUserDictionary : public UserDictionaryInterface {
@@ -93,36 +91,39 @@ class MockUserDictionary : public UserDictionaryInterface {
   MOCK_METHOD(bool, HasValue, (absl::string_view value), (const, override));
   MOCK_METHOD(void, LookupPredictive,
               (absl::string_view key,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(void, LookupPrefix,
               (absl::string_view key,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(void, LookupExact,
               (absl::string_view key,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(void, LookupReverse,
               (absl::string_view str,
-               const ConversionRequest &conversion_request, Callback *callback),
+               const ConversionRequest& conversion_request, Callback* callback),
               (const, override));
   MOCK_METHOD(bool, LookupComment,
               (absl::string_view key, absl::string_view value,
-               const ConversionRequest &conversion_request,
-               std::string *comment),
+               const ConversionRequest& conversion_request,
+               std::string* comment),
               (const, override));
   MOCK_METHOD(void, PopulateReverseLookupCache, (absl::string_view str),
               (const, override));
   MOCK_METHOD(void, ClearReverseLookupCache, (), (const, override));
-  MOCK_METHOD(bool, Sync, (), (override));
   MOCK_METHOD(bool, Reload, (), (override));
 
   MOCK_METHOD(void, WaitForReloader, (), (override));
 
   MOCK_METHOD(std::vector<std::string>, GetPosList, (), (const, override));
-  MOCK_METHOD(bool, Load, (const user_dictionary::UserDictionaryStorage &),
+  MOCK_METHOD(bool, Load, (const user_dictionary::UserDictionaryStorage&),
               (override));
+  MOCK_METHOD(bool, IsSuppressedEntry,
+              (absl::string_view key, absl::string_view value),
+              (const, override));
+  MOCK_METHOD(bool, HasSuppressedEntries, (), (const, override));
 };
 
 class MockCallback : public DictionaryInterface::Callback {
@@ -139,7 +140,7 @@ class MockCallback : public DictionaryInterface::Callback {
 
   MOCK_METHOD(ResultType, OnToken,
               (absl::string_view key, absl::string_view expanded_key,
-               const Token &token_info),
+               const Token& token_info),
               (override));
 };
 

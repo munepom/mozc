@@ -34,10 +34,12 @@
 #include <string>
 #include <vector>
 
-#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
-#include "converter/converter_interface.h"
+#include "engine/engine_converter_interface.h"
+#include "protocol/commands.pb.h"
+#include "protocol/config.pb.h"
 #include "protocol/engine_builder.pb.h"
+#include "protocol/user_dictionary_storage.pb.h"
 
 namespace mozc {
 
@@ -47,17 +49,15 @@ namespace mozc {
 // well as Kana-Kanji converter/predictor, etc.
 class EngineInterface {
  public:
-  EngineInterface(const EngineInterface &) = delete;
-  EngineInterface &operator=(const EngineInterface &) = delete;
+  EngineInterface(const EngineInterface&) = delete;
+  EngineInterface& operator=(const EngineInterface&) = delete;
 
   virtual ~EngineInterface() = default;
 
-  // Returns a reference to a converter. The returned instance is managed by the
-  // engine class and should not be deleted by callers.
-  virtual ConverterInterface *GetConverter() const = 0;
-
-  // Returns the predictor name.
-  virtual absl::string_view GetPredictorName() const = 0;
+  // Creates new session converter.
+  // This method is called per input context.
+  virtual std::unique_ptr<engine::EngineConverterInterface>
+  CreateEngineConverter() const = 0;
 
   // Gets the version of underlying data set.
   virtual absl::string_view GetDataVersion() const = 0;
@@ -93,14 +93,21 @@ class EngineInterface {
   virtual std::vector<std::string> GetPosList() const { return {}; }
 
   // Maybe reload a new data manager. Returns true if reloaded.
-  virtual bool MaybeReloadEngine(EngineReloadResponse *response) {
+  virtual bool MaybeReloadEngine(EngineReloadResponse* response) {
     return false;
   }
-  virtual bool SendEngineReloadRequest(const EngineReloadRequest &request) {
+  virtual bool SendEngineReloadRequest(const EngineReloadRequest& request) {
     return false;
   }
   virtual bool SendSupplementalModelReloadRequest(
-      const EngineReloadRequest &request) {
+      const EngineReloadRequest& request) {
+    return false;
+  }
+
+  // Evaluates user dictionary command.
+  virtual bool EvaluateUserDictionaryCommand(
+      const user_dictionary::UserDictionaryCommand& command,
+      user_dictionary::UserDictionaryCommandStatus* status) {
     return false;
   }
 

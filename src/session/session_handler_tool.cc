@@ -37,6 +37,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/no_destructor.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -59,16 +60,11 @@
 #include "config/config_handler.h"
 #include "engine/engine_factory.h"
 #include "engine/engine_interface.h"
-#include "prediction/user_history_predictor.h"
 #include "protocol/candidate_window.pb.h"
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "request/request_test_util.h"
 #include "session/session_handler.h"
-#include "session/session_handler_interface.h"
-#include "session/session_usage_observer.h"
-#include "storage/registry.h"
-#include "usage_stats/usage_stats.h"
 
 namespace mozc {
 namespace session {
@@ -89,10 +85,8 @@ using ::mozc::protobuf::Message;
 using ::mozc::protobuf::TextFormat;
 using ::mozc::session::SessionHandlerTool;
 
-std::string ToTextFormat(const Message &proto) {
-  std::string str;
-  TextFormat::PrintToString(proto, &str);
-  return str;
+std::string ToTextFormat(const Message& proto) {
+  return ::mozc::protobuf::Utf8Format(proto);
 }
 
 }  // namespace
@@ -100,10 +94,7 @@ std::string ToTextFormat(const Message &proto) {
 SessionHandlerTool::SessionHandlerTool(std::unique_ptr<EngineInterface> engine)
     : id_(0),
       engine_(engine.get()),
-      usage_observer_(std::make_unique<SessionUsageObserver>()),
-      handler_(std::make_unique<SessionHandler>(std::move(engine))) {
-  handler_->AddObserver(usage_observer_.get());
-}
+      handler_(std::make_unique<SessionHandler>(std::move(engine))) {}
 
 bool SessionHandlerTool::CreateSession() {
   Command command;
@@ -143,9 +134,9 @@ bool SessionHandlerTool::ClearUserHistory() {
   return handler_->EvalCommand(&command);
 }
 
-bool SessionHandlerTool::SendKeyWithOption(const commands::KeyEvent &key,
-                                           const commands::Input &option,
-                                           commands::Output *output) {
+bool SessionHandlerTool::SendKeyWithOption(const commands::KeyEvent& key,
+                                           const commands::Input& option,
+                                           commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SEND_KEY);
   *input.mutable_key() = key;
@@ -153,9 +144,9 @@ bool SessionHandlerTool::SendKeyWithOption(const commands::KeyEvent &key,
   return EvalCommand(&input, output);
 }
 
-bool SessionHandlerTool::TestSendKeyWithOption(const commands::KeyEvent &key,
-                                               const commands::Input &option,
-                                               commands::Output *output) {
+bool SessionHandlerTool::TestSendKeyWithOption(const commands::KeyEvent& key,
+                                               const commands::Input& option,
+                                               commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::TEST_SEND_KEY);
   *input.mutable_key() = key;
@@ -164,7 +155,7 @@ bool SessionHandlerTool::TestSendKeyWithOption(const commands::KeyEvent &key,
 }
 
 bool SessionHandlerTool::UpdateComposition(absl::Span<const std::string> args,
-                                           commands::Output *output) {
+                                           commands::Output* output) {
   DCHECK_EQ(0, args.size() % 2);
   commands::Input input;
   //  input.set_type(commands::Input::UPDATE_COMPOSITION);
@@ -172,7 +163,7 @@ bool SessionHandlerTool::UpdateComposition(absl::Span<const std::string> args,
   input.mutable_command()->set_type(
       commands::SessionCommand::UPDATE_COMPOSITION);
   for (int i = 0; i < args.size(); i += 2) {
-    commands::SessionCommand::CompositionEvent *composition_event =
+    commands::SessionCommand::CompositionEvent* composition_event =
         input.mutable_command()->add_composition_events();
     composition_event->set_composition_string(args[i]);
     if (double value = 0.0; NumberUtil::SafeStrToDouble(args[i + 1], &value)) {
@@ -183,7 +174,7 @@ bool SessionHandlerTool::UpdateComposition(absl::Span<const std::string> args,
 }
 
 bool SessionHandlerTool::SelectCandidate(uint32_t id,
-                                         commands::Output *output) {
+                                         commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SEND_COMMAND);
   input.mutable_command()->set_type(commands::SessionCommand::SELECT_CANDIDATE);
@@ -192,7 +183,7 @@ bool SessionHandlerTool::SelectCandidate(uint32_t id,
 }
 
 bool SessionHandlerTool::SubmitCandidate(uint32_t id,
-                                         commands::Output *output) {
+                                         commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SEND_COMMAND);
   input.mutable_command()->set_type(commands::SessionCommand::SUBMIT_CANDIDATE);
@@ -213,7 +204,7 @@ bool SessionHandlerTool::ResetContext() {
   return EvalCommand(&input, nullptr);
 }
 
-bool SessionHandlerTool::UndoOrRewind(commands::Output *output) {
+bool SessionHandlerTool::UndoOrRewind(commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SEND_COMMAND);
   input.mutable_command()->set_type(commands::SessionCommand::UNDO_OR_REWIND);
@@ -221,7 +212,7 @@ bool SessionHandlerTool::UndoOrRewind(commands::Output *output) {
 }
 
 bool SessionHandlerTool::DeleteCandidateFromHistory(std::optional<int> id,
-                                                    commands::Output *output) {
+                                                    commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SEND_COMMAND);
   input.mutable_command()->set_type(
@@ -242,16 +233,16 @@ bool SessionHandlerTool::SwitchInputMode(
   return EvalCommand(&input, nullptr);
 }
 
-bool SessionHandlerTool::SetRequest(const commands::Request &request,
-                                    commands::Output *output) {
+bool SessionHandlerTool::SetRequest(const commands::Request& request,
+                                    commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SET_REQUEST);
   *input.mutable_request() = request;
   return EvalCommand(&input, output);
 }
 
-bool SessionHandlerTool::SetConfig(const config::Config &config,
-                                   commands::Output *output) {
+bool SessionHandlerTool::SetConfig(const config::Config& config,
+                                   commands::Output* output) {
   commands::Input input;
   input.set_type(commands::Input::SET_CONFIG);
   *input.mutable_config() = config;
@@ -271,13 +262,13 @@ void SessionHandlerTool::SetCallbackText(const absl::string_view text) {
 bool SessionHandlerTool::ReloadSupplementalModel(absl::string_view model_path) {
   commands::Input input;
   input.mutable_engine_reload_request()->set_file_path(model_path);
-  input.set_type(commands::Input::RELOAD_SPELL_CHECKER);
+  input.set_type(commands::Input::RELOAD_SUPPLEMENTAL_MODEL);
   commands::Output output;
   return EvalCommand(&input, &output);
 }
 
-bool SessionHandlerTool::EvalCommandInternal(commands::Input *input,
-                                             commands::Output *output,
+bool SessionHandlerTool::EvalCommandInternal(commands::Input* input,
+                                             commands::Output* output,
                                              bool allow_callback) {
   input->set_id(id_);
   commands::Command command;
@@ -302,8 +293,8 @@ bool SessionHandlerTool::EvalCommandInternal(commands::Input *input,
   return result;
 }
 
-bool SessionHandlerTool::EvalCommand(commands::Input *input,
-                                     commands::Output *output) {
+bool SessionHandlerTool::EvalCommand(commands::Input* input,
+                                     commands::Output* output) {
   return EvalCommandInternal(input, output, true);
 }
 
@@ -313,11 +304,9 @@ SessionHandlerInterpreter::SessionHandlerInterpreter()
 SessionHandlerInterpreter::SessionHandlerInterpreter(
     std::unique_ptr<EngineInterface> engine) {
   client_ = std::make_unique<SessionHandlerTool>(std::move(engine));
-  config_ = std::make_unique<Config>();
   last_output_ = std::make_unique<Output>();
   request_ = std::make_unique<Request>();
-
-  ConfigHandler::GetConfig(config_.get());
+  config_ = ConfigHandler::GetCopiedConfig();
 
   // Set up session.
   CHECK(client_->CreateSession()) << "Client initialization is failed.";
@@ -331,29 +320,26 @@ SessionHandlerInterpreter::~SessionHandlerInterpreter() {
 }
 
 void SessionHandlerInterpreter::ClearState() {
-  Config config;
-  ConfigHandler::GetDefaultConfig(&config);
+  const Config& config = ConfigHandler::DefaultConfig();
   ConfigHandler::SetConfig(config);
 
   // CharacterFormManager is not automatically updated when the config is
   // updated.
   CharacterFormManager::GetCharacterFormManager()->ReloadConfig(config);
 
+  CHECK(client_->ClearUserHistory());
+
   // Some destructors may save the state on storages. To clear the state, we
   // explicitly call destructors before clearing storages.
-  storage::Registry::Clear();
   FileUtil::UnlinkOrLogError(
       ConfigFileStream::GetFileName("user://boundary.db"));
   FileUtil::UnlinkOrLogError(
       ConfigFileStream::GetFileName("user://segment.db"));
-  FileUtil::UnlinkOrLogError(
-      prediction::UserHistoryPredictor::GetUserHistoryFileName());
 }
 
 void SessionHandlerInterpreter::ClearAll() {
   ResetContext();
   ClearUserPrediction();
-  ClearUsageStats();
 }
 
 void SessionHandlerInterpreter::ResetContext() {
@@ -371,44 +357,40 @@ void SessionHandlerInterpreter::ClearUserPrediction() {
   SyncDataToStorage();
 }
 
-void SessionHandlerInterpreter::ClearUsageStats() {
-  usage_stats::UsageStats::ClearAllStatsForTest();
-}
-
-const Output &SessionHandlerInterpreter::LastOutput() const {
+const Output& SessionHandlerInterpreter::LastOutput() const {
   return *last_output_;
 }
 
-const CandidateWord &SessionHandlerInterpreter::GetCandidateByValue(
+const CandidateWord& SessionHandlerInterpreter::GetCandidateByValue(
     const absl::string_view value) const {
-  const Output &output = LastOutput();
+  const Output& output = LastOutput();
 
-  for (const CandidateWord &candidate :
+  for (const CandidateWord& candidate :
        output.all_candidate_words().candidates()) {
     if (candidate.value() == value) {
       return candidate;
     }
   }
 
-  for (const CandidateWord &candidate :
+  for (const CandidateWord& candidate :
        output.removed_candidate_words_for_debug().candidates()) {
     if (candidate.value() == value) {
       return candidate;
     }
   }
 
-  static CandidateWord *fallback_candidate = new CandidateWord;
+  static absl::NoDestructor<CandidateWord> fallback_candidate;
   return *fallback_candidate;
 }
 
 bool SessionHandlerInterpreter::GetCandidateIdByValue(
-    const absl::string_view value, uint32_t *id) const {
-  const Output &output = LastOutput();
+    const absl::string_view value, uint32_t* id) const {
+  const Output& output = LastOutput();
   if (!output.has_all_candidate_words()) {
     return false;
   }
 
-  for (const CandidateWord &candidate :
+  for (const CandidateWord& candidate :
        output.all_candidate_words().candidates()) {
     if (candidate.has_value() && candidate.value() == value) {
       *id = candidate.id();
@@ -420,13 +402,13 @@ bool SessionHandlerInterpreter::GetCandidateIdByValue(
 
 std::vector<uint32_t> SessionHandlerInterpreter::GetCandidateIdsByValue(
     absl::string_view value) const {
-  const Output &output = LastOutput();
+  const Output& output = LastOutput();
   if (!output.has_all_candidate_words()) {
     return {};
   }
 
   std::vector<uint32_t> ids;
-  for (const CandidateWord &candidate :
+  for (const CandidateWord& candidate :
        output.all_candidate_words().candidates()) {
     if (candidate.has_value() && candidate.value() == value) {
       ids.push_back(candidate.id());
@@ -437,13 +419,13 @@ std::vector<uint32_t> SessionHandlerInterpreter::GetCandidateIdsByValue(
 
 std::vector<uint32_t> SessionHandlerInterpreter::GetRemovedCandidateIdsByValue(
     absl::string_view value) const {
-  const Output &output = LastOutput();
+  const Output& output = LastOutput();
   if (!output.has_removed_candidate_words_for_debug()) {
     return {};
   }
 
   std::vector<uint32_t> ids;
-  for (const CandidateWord &candidate :
+  for (const CandidateWord& candidate :
        output.removed_candidate_words_for_debug().candidates()) {
     if (candidate.has_value() && candidate.value() == value) {
       ids.push_back(candidate.id());
@@ -454,8 +436,8 @@ std::vector<uint32_t> SessionHandlerInterpreter::GetRemovedCandidateIdsByValue(
 
 bool SetOrAddFieldValueFromString(const absl::string_view name,
                                   const absl::string_view value,
-                                  Message *message) {
-  const FieldDescriptor *field =
+                                  Message* message) {
+  const FieldDescriptor* field =
       message->GetDescriptor()->FindFieldByName(name);
   if (!field) {
     LOG(ERROR) << "Unknown field name: " << name;
@@ -472,18 +454,18 @@ bool SetOrAddFieldValueFromString(const absl::string_view name,
 
 bool SetOrAddFieldValueFromString(const absl::Span<const std::string> names,
                                   const absl::string_view value,
-                                  Message *message) {
+                                  Message* message) {
   if (names.empty()) {
     LOG(ERROR) << "Empty names is passed";
     return false;
   }
-  const std::string &first = names[0];
+  const std::string& first = names[0];
   if (names.size() == 1) {
     return SetOrAddFieldValueFromString(first, value, message);
   }
-  const FieldDescriptor *field =
+  const FieldDescriptor* field =
       message->GetDescriptor()->FindFieldByName(first);
-  Message *field_message =
+  Message* field_message =
       message->GetReflection()->MutableMessage(message, field);
   return SetOrAddFieldValueFromString(names.subspan(1), value, field_message);
 }
@@ -492,16 +474,16 @@ bool SetOrAddFieldValueFromString(const absl::Span<const std::string> names,
 // input sample: context.experimental_features="chrome_omnibox"
 // We cannot use TextFormat::ParseFromString since it doesn't allow invalid
 // protobuf. (e.g. lack of required field)
-bool ParseProtobufFromString(const absl::string_view text, Message *message) {
+bool ParseProtobufFromString(const absl::string_view text, Message* message) {
   const size_t separator_pos = text.find('=');
   const absl::string_view full_name = text.substr(0, separator_pos);
   const absl::string_view value = text.substr(separator_pos + 1);
   std::vector<absl::string_view> names =
       absl::StrSplit(full_name, '.', absl::SkipEmpty());
 
-  Message *msg = message;
+  Message* msg = message;
   for (size_t i = 0; i < names.size() - 1; ++i) {
-    const FieldDescriptor *field =
+    const FieldDescriptor* field =
         msg->GetDescriptor()->FindFieldByName(names[i]);
     if (!field) {
       LOG(ERROR) << "Unknown field name: " << names[i];
@@ -597,7 +579,7 @@ absl::Status SessionHandlerInterpreter::Eval(
 
   SyncDataToStorage();
 
-  const std::string &command = args[0];
+  const std::string& command = args[0];
   // TODO(hidehiko): Refactor out about each command when the number of
   //   supported commands is increased.
   if (command == "RESET_CONTEXT") {
@@ -605,7 +587,7 @@ absl::Status SessionHandlerInterpreter::Eval(
     ResetContext();
   } else if (command == "SEND_KEYS") {
     MOZC_ASSERT_EQ(2, args.size());
-    const std::string &keys = args[1];
+    const std::string& keys = args[1];
     KeyEvent key_event;
     for (size_t i = 0; i < keys.size(); ++i) {
       key_event.Clear();
@@ -618,8 +600,8 @@ absl::Status SessionHandlerInterpreter::Eval(
         args.size() >= 3,
         absl::StrCat("SEND_KEY requires more than or equal to two args ",
                      absl::StrJoin(args, "\t")));
-    const std::string &keys = args[1];
-    const std::string &kanas = args[2];
+    const std::string& keys = args[1];
+    const std::string& kanas = args[2];
     MOZC_ASSERT_EQ_MSG(
         keys.size(), Util::CharsLen(kanas),
         "1st and 2nd column must have the same number of characters.");
@@ -719,11 +701,11 @@ absl::Status SessionHandlerInterpreter::Eval(
     MOZC_ASSERT_TRUE(args.size() >= 3);
     MOZC_ASSERT_TRUE(SetOrAddFieldValueFromString(
         std::vector<std::string>(args.begin() + 1, args.end() - 1),
-        *(args.end() - 1), config_.get()));
-    MOZC_ASSERT_TRUE(client_->SetConfig(*config_, last_output_.get()));
+        *(args.end() - 1), &config_));
+    MOZC_ASSERT_TRUE(client_->SetConfig(config_, last_output_.get()));
   } else if (command == "MERGE_DECODER_EXPERIMENT_PARAMS") {
     MOZC_ASSERT_EQ(2, args.size());
-    if (const std::string &textproto = args[1]; !textproto.empty()) {
+    if (const std::string& textproto = args[1]; !textproto.empty()) {
       mozc::commands::DecoderExperimentParams params;
       CHECK(mozc::protobuf::TextFormat::ParseFromString(textproto, &params))
           << "Invalid DecoderExperimentParams: " << textproto;
@@ -754,19 +736,16 @@ absl::Status SessionHandlerInterpreter::Eval(
   } else if (command == "CLEAR_USER_PREDICTION") {
     MOZC_ASSERT_EQ(1, args.size());
     ClearUserPrediction();
-  } else if (command == "CLEAR_USAGE_STATS") {
-    MOZC_ASSERT_EQ(1, args.size());
-    ClearUsageStats();
   } else if (command == "EXPECT_CONSUMED") {
     MOZC_ASSERT_EQ(args.size(), 2);
     MOZC_ASSERT_TRUE(last_output_->has_consumed());
     MOZC_EXPECT_EQ(last_output_->consumed(), args[1] == "true");
   } else if (command == "EXPECT_PREEDIT") {
     // Concat preedit segments and assert.
-    const std::string &expected_preedit =
+    const std::string& expected_preedit =
         TextNormalizer::NormalizeText(args.size() == 1 ? "" : args[1]);
     std::string preedit_string;
-    const mozc::commands::Preedit &preedit = last_output_->preedit();
+    const mozc::commands::Preedit& preedit = last_output_->preedit();
     for (int i = 0; i < preedit.segment_size(); ++i) {
       preedit_string += preedit.segment(i).value();
     }
@@ -776,7 +755,7 @@ absl::Status SessionHandlerInterpreter::Eval(
                      "Actual preedit: ", ToTextFormat(preedit)));
   } else if (command == "EXPECT_PREEDIT_IN_DETAIL") {
     MOZC_ASSERT_TRUE(!args.empty());
-    const mozc::commands::Preedit &preedit = last_output_->preedit();
+    const mozc::commands::Preedit& preedit = last_output_->preedit();
     MOZC_ASSERT_EQ(preedit.segment_size(), args.size() - 1);
     for (int i = 0; i < preedit.segment_size(); ++i) {
       MOZC_EXPECT_EQ_MSG(preedit.segment(i).value(),
@@ -787,7 +766,7 @@ absl::Status SessionHandlerInterpreter::Eval(
     // Concat preedit segments and assert.
     MOZC_ASSERT_EQ(args.size(), 2);
     const size_t expected_pos = NumberUtil::SimpleAtoi(args[1]);
-    const mozc::commands::Preedit &preedit = last_output_->preedit();
+    const mozc::commands::Preedit& preedit = last_output_->preedit();
     MOZC_EXPECT_EQ_MSG(preedit.cursor(), expected_pos, ToTextFormat(preedit));
   } else if (command == "EXPECT_CANDIDATE") {
     MOZC_ASSERT_EQ(args.size(), 3);
@@ -805,7 +784,7 @@ absl::Status SessionHandlerInterpreter::Eval(
     }
   } else if (command == "EXPECT_CANDIDATE_DESCRIPTION") {
     MOZC_ASSERT_EQ(args.size(), 3);
-    const CandidateWord &cand = GetCandidateByValue(args[1]);
+    const CandidateWord& cand = GetCandidateByValue(args[1]);
     const bool has_cand = !cand.value().empty();
     MOZC_EXPECT_TRUE_MSG(
         has_cand, absl::StrCat(args[1], " is not found\n",
@@ -816,7 +795,7 @@ absl::Status SessionHandlerInterpreter::Eval(
   } else if (command == "EXPECT_RESULT") {
     if (args.size() == 2 && !args[1].empty()) {
       MOZC_ASSERT_TRUE(last_output_->has_result());
-      const mozc::commands::Result &result = last_output_->result();
+      const mozc::commands::Result& result = last_output_->result();
       MOZC_EXPECT_EQ_MSG(result.value(), TextNormalizer::NormalizeText(args[1]),
                          ToTextFormat(result));
     } else {
@@ -854,7 +833,7 @@ absl::Status SessionHandlerInterpreter::Eval(
   } else if (command == "EXPECT_HIGHLIGHTED_SEGMENT_INDEX") {
     MOZC_ASSERT_EQ(args.size(), 2);
     MOZC_ASSERT_TRUE(last_output_->has_preedit());
-    const mozc::commands::Preedit &preedit = last_output_->preedit();
+    const mozc::commands::Preedit& preedit = last_output_->preedit();
     int index = -1;
     for (int i = 0; i < preedit.segment_size(); ++i) {
       if (preedit.segment(i).annotation() ==
@@ -864,32 +843,6 @@ absl::Status SessionHandlerInterpreter::Eval(
       }
     }
     MOZC_ASSERT_EQ(index, NumberUtil::SimpleAtoi(args[1]));
-  } else if (command == "EXPECT_USAGE_STATS_COUNT") {
-    MOZC_ASSERT_EQ(args.size(), 3);
-    const uint32_t expected_value = NumberUtil::SimpleAtoi(args[2]);
-    if (expected_value == 0) {
-      MOZC_EXPECT_STATS_NOT_EXIST(args[1]);
-    } else {
-      MOZC_EXPECT_COUNT_STATS(args[1], expected_value);
-    }
-  } else if (command == "EXPECT_USAGE_STATS_INTEGER") {
-    MOZC_ASSERT_EQ(args.size(), 3);
-    MOZC_EXPECT_INTEGER_STATS(args[1], NumberUtil::SimpleAtoi(args[2]));
-  } else if (command == "EXPECT_USAGE_STATS_BOOLEAN") {
-    MOZC_ASSERT_EQ(args.size(), 3);
-    MOZC_EXPECT_BOOLEAN_STATS(args[1], args[2] == "true");
-  } else if (command == "EXPECT_USAGE_STATS_TIMING") {
-    MOZC_ASSERT_EQ(args.size(), 6);
-    const uint32_t expected_num = NumberUtil::SimpleAtoi(args[3]);
-    if (expected_num == 0) {
-      MOZC_EXPECT_STATS_NOT_EXIST(args[1]);
-    } else {
-      const uint64_t expected_total = NumberUtil::SimpleAtoi(args[2]);
-      const uint32_t expected_min = NumberUtil::SimpleAtoi(args[4]);
-      const uint32_t expected_max = NumberUtil::SimpleAtoi(args[5]);
-      MOZC_EXPECT_TIMING_STATS(args[1], expected_total, expected_num,
-                               expected_min, expected_max);
-    }
   } else {
     return absl::Status(absl::StatusCode::kUnimplemented, "");
   }
@@ -897,7 +850,7 @@ absl::Status SessionHandlerInterpreter::Eval(
   return absl::OkStatus();
 }
 
-void SessionHandlerInterpreter::SetRequest(const commands::Request &request) {
+void SessionHandlerInterpreter::SetRequest(const commands::Request& request) {
   *request_ = request;
 }
 

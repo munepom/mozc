@@ -61,8 +61,10 @@ using ::testing::Return;
 
 class ValueDictionaryTest : public ::testing::Test {
  protected:
+  ValueDictionaryTest()
+      : pos_matcher_(mock_data_manager_.GetPosMatcherData()) {}
+
   void SetUp() override {
-    pos_matcher_.Set(mock_data_manager_.GetPosMatcherData());
     louds_trie_builder_ = std::make_unique<LoudsTrieBuilder>();
     louds_trie_ = std::make_unique<LoudsTrie>();
   }
@@ -78,22 +80,25 @@ class ValueDictionaryTest : public ::testing::Test {
     louds_trie_builder_->Add(encoded);
   }
 
-  ValueDictionary *BuildValueDictionary() {
+  ValueDictionary* BuildValueDictionary() {
     louds_trie_builder_->Build();
     louds_trie_->Open(
-        reinterpret_cast<const uint8_t *>(louds_trie_builder_->image().data()));
+        reinterpret_cast<const uint8_t*>(louds_trie_builder_->image().data()));
     return new ValueDictionary(pos_matcher_, louds_trie_.get());
   }
 
-  void InitToken(const absl::string_view value, Token *token) const {
+  void InitToken(const absl::string_view value, Token* token) const {
     token->key = token->value = std::string(value);
     token->cost = 10000;
     token->lid = token->rid = pos_matcher_.GetSuggestOnlyWordId();
     token->attributes = Token::NONE;
   }
 
+ private:
   const testing::MockDataManager mock_data_manager_;
-  PosMatcher pos_matcher_;
+
+ protected:
+  const PosMatcher pos_matcher_;
   ConversionRequest convreq_;
   std::unique_ptr<LoudsTrieBuilder> louds_trie_builder_;
   std::unique_ptr<LoudsTrie> louds_trie_;
@@ -201,7 +206,7 @@ TEST_F(ValueDictionaryTest, LookupPredictive) {
   {
     CollectTokenCallback callback;
     dictionary->LookupPredictive("w", convreq_, &callback);
-    std::vector<Token *> expected;
+    std::vector<Token*> expected;
     expected.push_back(&token_we);
     expected.push_back(&token_war);
     expected.push_back(&token_word);
@@ -211,7 +216,7 @@ TEST_F(ValueDictionaryTest, LookupPredictive) {
   {
     CollectTokenCallback callback;
     dictionary->LookupPredictive("wo", convreq_, &callback);
-    std::vector<Token *> expected;
+    std::vector<Token*> expected;
     expected.push_back(&token_word);
     expected.push_back(&token_world);
     EXPECT_TOKENS_EQ_UNORDERED(expected, callback.tokens());

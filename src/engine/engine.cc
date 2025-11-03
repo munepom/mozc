@@ -32,61 +32,43 @@
 #include <memory>
 #include <utility>
 
-#include "absl/base/optimization.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
-#include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "base/vlog.h"
 #include "converter/converter.h"
 #include "converter/converter_interface.h"
 #include "converter/immutable_converter.h"
 #include "converter/immutable_converter_interface.h"
 #include "data_manager/data_manager.h"
+#include "dictionary/user_dictionary_session_handler.h"
 #include "engine/data_loader.h"
 #include "engine/minimal_converter.h"
 #include "engine/modules.h"
 #include "engine/supplemental_model_interface.h"
-#include "prediction/dictionary_predictor.h"
 #include "prediction/predictor.h"
-#include "prediction/predictor_interface.h"
-#include "prediction/user_history_predictor.h"
 #include "protocol/engine_builder.pb.h"
+#include "protocol/user_dictionary_storage.pb.h"
 #include "rewriter/rewriter.h"
 #include "rewriter/rewriter_interface.h"
 
-
 namespace mozc {
 
-absl::StatusOr<std::unique_ptr<Engine>> Engine::CreateDesktopEngine(
-    std::unique_ptr<const DataManager> data_manager) {
-  constexpr bool kIsMobile = false;
-  return CreateEngine(std::move(data_manager), kIsMobile);
-}
-
-absl::StatusOr<std::unique_ptr<Engine>> Engine::CreateMobileEngine(
-    std::unique_ptr<const DataManager> data_manager) {
-  constexpr bool kIsMobile = true;
-  return CreateEngine(std::move(data_manager), kIsMobile);
-}
-
 absl::StatusOr<std::unique_ptr<Engine>> Engine::CreateEngine(
-    std::unique_ptr<const DataManager> data_manager, bool is_mobile) {
-  auto modules = std::make_unique<engine::Modules>();
-  absl::Status modules_status = modules->Init(std::move(data_manager));
+    std::unique_ptr<const DataManager> data_manager) {
+  absl::StatusOr<std::unique_ptr<engine::Modules>> modules_status =
+      engine::Modules::Create(std::move(data_manager));
   if (!modules_status.ok()) {
-    return modules_status;
+    return modules_status.status();
   }
-  return CreateEngine(std::move(modules), is_mobile);
+  return CreateEngine(std::move(modules_status.value()));
 }
 
 absl::StatusOr<std::unique_ptr<Engine>> Engine::CreateEngine(
-    std::unique_ptr<engine::Modules> modules, bool is_mobile) {
-  // Since Engine() is a private function, std::make_unique does not work.
-  auto engine = absl::WrapUnique(new Engine());
-  absl::Status engine_status = engine->Init(std::move(modules), is_mobile);
+    std::unique_ptr<engine::Modules> modules) {
+  auto engine = std::make_unique<Engine>();
+  absl::Status engine_status = engine->Init(std::move(modules));
   if (!engine_status.ok()) {
     return engine_status;
   }
@@ -94,51 +76,33 @@ absl::StatusOr<std::unique_ptr<Engine>> Engine::CreateEngine(
 }
 
 std::unique_ptr<Engine> Engine::CreateEngine() {
-  return absl::WrapUnique(new Engine());
+  return std::make_unique<Engine>();
 }
 
 Engine::Engine() : minimal_converter_(CreateMinimalConverter()) {}
 
-absl::Status Engine::ReloadModules(std::unique_ptr<engine::Modules> modules,
-                                   bool is_mobile) {
+absl::Status Engine::ReloadModules(std::unique_ptr<engine::Modules> modules) {
   ReloadAndWait();
-  return Init(std::move(modules), is_mobile);
+  return Init(std::move(modules));
 }
 
-absl::Status Engine::Init(std::unique_ptr<engine::Modules> modules,
-                          bool is_mobile) {
-
-  auto immutable_converter_factory = [](const engine::Modules &modules) {
+absl::Status Engine::Init(std::unique_ptr<engine::Modules> modules) {
+  auto immutable_converter_factory = [](const engine::Modules& modules) {
     return std::make_unique<ImmutableConverter>(modules);
   };
 
   auto predictor_factory =
-      [is_mobile](const engine::Modules &modules,
-                  const ConverterInterface *converter,
-                  const ImmutableConverterInterface *immutable_converter) {
-        auto dictionary_predictor =
-            std::make_unique<prediction::DictionaryPredictor>(
-                modules, converter, immutable_converter);
-
-        const bool enable_content_word_learning = is_mobile;
-        auto user_history_predictor =
-            std::make_unique<prediction::UserHistoryPredictor>(
-                modules, enable_content_word_learning);
-
-        return is_mobile ? prediction::MobilePredictor::CreateMobilePredictor(
-                               std::move(dictionary_predictor),
-                               std::move(user_history_predictor), converter)
-                         : prediction::DefaultPredictor::CreateDefaultPredictor(
-                               std::move(dictionary_predictor),
-                               std::move(user_history_predictor), converter);
+      [](const engine::Modules& modules, const ConverterInterface& converter,
+         const ImmutableConverterInterface& immutable_converter) {
+        return std::make_unique<prediction::Predictor>(modules, converter,
+                                                       immutable_converter);
       };
 
-  auto rewriter_factory = [](const engine::Modules &modules,
-                             const ConverterInterface *converter) {
-    return std::make_unique<Rewriter>(modules, *converter);
+  auto rewriter_factory = [](const engine::Modules& modules) {
+    return std::make_unique<Rewriter>(modules);
   };
 
-  auto converter = std::make_unique<Converter>(
+  auto converter = std::make_shared<converter::Converter>(
       std::move(modules), immutable_converter_factory, predictor_factory,
       rewriter_factory);
 
@@ -161,20 +125,20 @@ bool Engine::ReloadAndWait() { return Reload() && Wait(); }
 
 bool Engine::ClearUserHistory() {
   if (converter_) {
-    converter_->rewriter()->Clear();
+    converter_->rewriter().Clear();
   }
   return true;
 }
 
 bool Engine::ClearUserPrediction() {
-  return converter_ && converter_->predictor()->ClearAllHistory();
+  return converter_ && converter_->predictor().ClearAllHistory();
 }
 
 bool Engine::ClearUnusedUserPrediction() {
-  return converter_ && converter_->predictor()->ClearUnusedHistory();
+  return converter_ && converter_->predictor().ClearUnusedHistory();
 }
 
-bool Engine::MaybeReloadEngine(EngineReloadResponse *response) {
+bool Engine::MaybeReloadEngine(EngineReloadResponse* response) {
   if (!converter_ || always_wait_for_testing_) {
     loader_.Wait();
   }
@@ -183,12 +147,10 @@ bool Engine::MaybeReloadEngine(EngineReloadResponse *response) {
     return false;
   }
 
-  const bool is_mobile = loader_response_->response.request().engine_type() ==
-                         EngineReloadRequest::MOBILE;
   *response = std::move(loader_response_->response);
 
   const absl::Status reload_status =
-      ReloadModules(std::move(loader_response_->modules), is_mobile);
+      ReloadModules(std::move(loader_response_->modules));
   if (reload_status.ok()) {
     response->set_status(EngineReloadResponse::RELOADED);
   }
@@ -197,7 +159,7 @@ bool Engine::MaybeReloadEngine(EngineReloadResponse *response) {
   return reload_status.ok();
 }
 
-bool Engine::SendEngineReloadRequest(const EngineReloadRequest &request) {
+bool Engine::SendEngineReloadRequest(const EngineReloadRequest& request) {
   return loader_.StartNewDataBuildTask(
       request, [this](std::unique_ptr<DataLoader::Response> response) {
         loader_response_ = std::move(response);
@@ -206,11 +168,17 @@ bool Engine::SendEngineReloadRequest(const EngineReloadRequest &request) {
 }
 
 bool Engine::SendSupplementalModelReloadRequest(
-    const EngineReloadRequest &request) {
-  if (converter_ && converter_->modules()->GetSupplementalModel()) {
-    converter_->modules()->GetMutableSupplementalModel()->LoadAsync(request);
+    const EngineReloadRequest& request) {
+  if (converter_) {
+    converter_->modules().GetSupplementalModel().LoadAsync(request);
   }
   return true;
+}
+
+bool Engine::EvaluateUserDictionaryCommand(
+    const user_dictionary::UserDictionaryCommand& command,
+    user_dictionary::UserDictionaryCommandStatus* status) {
+  return user_dictionary_session_handler_.Evaluate(command, status);
 }
 
 }  // namespace mozc

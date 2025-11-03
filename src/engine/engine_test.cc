@@ -59,41 +59,36 @@ constexpr int kMiddlePriority = 50;
 class EngineTest : public ::testing::Test {
  protected:
   EngineTest() {
-    const std::string mock_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "testing", "mock_mozc.data"});
-    mock_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string mock_path =
+        testing::GetSourcePath({"data_manager", "testing", "mock_mozc.data"});
     mock_request_.set_file_path(mock_path);
     mock_request_.set_magic_number(kMockMagicNumber);
     mock_request_.set_priority(kMiddlePriority);
 
-    const std::string oss_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "oss", "mozc.data"});
-    oss_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string oss_path =
+        testing::GetSourcePath({"data_manager", "oss", "mozc.data"});
     oss_request_.set_file_path(oss_path);
     oss_request_.set_magic_number(kOssMagicNumber);
     oss_request_.set_priority(kMiddlePriority);
 
-    const std::string invalid_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "invalid", "mozc.data"});
-    invalid_path_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string invalid_path =
+        testing::GetSourcePath({"data_manager", "invalid", "mozc.data"});
     invalid_path_request_.set_file_path(invalid_path);
     invalid_path_request_.set_magic_number(kOssMagicNumber);
     invalid_path_request_.set_priority(kMiddlePriority);
 
-    invalid_data_request_.set_engine_type(EngineReloadRequest::MOBILE);
     invalid_data_request_.set_file_path(mock_path);
     invalid_data_request_.set_magic_number(kOssMagicNumber);
     invalid_data_request_.set_priority(kMiddlePriority);
 
-    DataManager mock_data_manager;
-    mock_data_manager.InitFromFile(mock_request_.file_path(),
-                                   mock_request_.magic_number());
-    mock_version_ = mock_data_manager.GetDataVersion();
-
-    DataManager oss_data_manager;
-    oss_data_manager.InitFromFile(oss_request_.file_path(),
-                                  oss_request_.magic_number());
-    oss_version_ = oss_data_manager.GetDataVersion();
+    mock_version_ = DataManager::CreateFromFile(mock_request_.file_path(),
+                                                mock_request_.magic_number())
+                        .value()
+                        ->GetDataVersion();
+    oss_version_ = DataManager::CreateFromFile(oss_request_.file_path(),
+                                               oss_request_.magic_number())
+                       .value()
+                       ->GetDataVersion();
   }
 
   void SetUp() override {
@@ -113,17 +108,11 @@ class EngineTest : public ::testing::Test {
 };
 
 TEST_F(EngineTest, ReloadModulesTest) {
-  auto modules = std::make_unique<engine::Modules>();
-  SupplementalModelForTesting supplemental_model;
-  modules->SetSupplementalModel(&supplemental_model);
+  std::unique_ptr<Modules> modules =
+      engine::Modules::Create(std::make_unique<testing::MockDataManager>())
+          .value();
 
-  CHECK_OK(modules->Init(std::make_unique<testing::MockDataManager>()));
-
-  const bool is_mobile = true;
-  CHECK_OK(engine_->ReloadModules(std::move(modules), is_mobile));
-
-  EXPECT_EQ(engine_->GetModulesForTesting()->GetSupplementalModel(),
-            &supplemental_model);
+  CHECK_OK(engine_->ReloadModules(std::move(modules)));
 }
 
 // Tests the interaction with DataLoader for successful Engine

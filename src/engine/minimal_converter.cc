@@ -32,13 +32,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string>
-#include <vector>
 
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "base/strings/assign.h"
+#include "converter/attribute.h"
+#include "converter/candidate.h"
 #include "converter/converter_interface.h"
 #include "converter/segments.h"
 #include "request/conversion_request.h"
@@ -46,7 +46,7 @@
 namespace mozc {
 namespace {
 
-bool AddAsIsCandidate(const absl::string_view key, Segments *segments) {
+bool AddAsIsCandidate(const absl::string_view key, Segments* segments) {
   if (key.empty()) {
     return false;
   }
@@ -54,10 +54,10 @@ bool AddAsIsCandidate(const absl::string_view key, Segments *segments) {
     return false;
   }
   segments->Clear();
-  Segment *segment = segments->add_segment();
+  Segment* segment = segments->add_segment();
   DCHECK(segment);
 
-  Segment::Candidate *candidate = segment->push_back_candidate();
+  converter::Candidate* candidate = segment->push_back_candidate();
   DCHECK(candidate);
   strings::Assign(candidate->content_key, key);
   strings::Assign(candidate->content_value, key);
@@ -67,12 +67,12 @@ bool AddAsIsCandidate(const absl::string_view key, Segments *segments) {
   candidate->rid = 0;
   candidate->wcost = 0;
   candidate->cost = 0;
-  candidate->attributes = Segment::Candidate::DEFAULT_ATTRIBUTE;
+  candidate->attributes = converter::Attribute::DEFAULT_ATTRIBUTE;
 
   return true;
 }
 
-bool AddAsIsCandidate(const ConversionRequest &request, Segments *segments) {
+bool AddAsIsCandidate(const ConversionRequest& request, Segments* segments) {
   return AddAsIsCandidate(request.key(), segments);
 }
 
@@ -80,70 +80,82 @@ class MinimalConverter : public ConverterInterface {
  public:
   MinimalConverter() = default;
 
-  bool StartConversion(const ConversionRequest &request,
-                       Segments *segments) const override {
+  bool StartConversion(const ConversionRequest& request,
+                       Segments* segments) const override {
     return AddAsIsCandidate(request, segments);
   }
 
-  bool StartReverseConversion(Segments *segments,
+  bool StartReverseConversion(Segments* segments,
                               const absl::string_view key) const override {
     return false;
   }
 
-  bool StartPrediction(const ConversionRequest &request,
-                       Segments *segments) const override {
+  bool StartPrediction(const ConversionRequest& request,
+                       Segments* segments) const override {
     return AddAsIsCandidate(request, segments);
   }
 
-  void FinishConversion(const ConversionRequest &request,
-                        Segments *segments) const override {}
+  bool StartPredictionWithPreviousSuggestion(
+      const ConversionRequest& request, const Segment& previous_segment,
+      Segments* segments) const override {
+    return AddAsIsCandidate(request, segments);
+  }
 
-  void CancelConversion(Segments *segments) const override {}
+  void PrependCandidates(const ConversionRequest& request,
+                         const Segment& segment,
+                         Segments* segments) const override {
+    segments->PrependCandidates(segment);
+  }
 
-  void ResetConversion(Segments *segments) const override {}
+  void FinishConversion(const ConversionRequest& request,
+                        Segments* segments) const override {}
 
-  void RevertConversion(Segments *segments) const override {}
+  void CancelConversion(Segments* segments) const override {}
 
-  bool DeleteCandidateFromHistory(const Segments &segments,
+  void ResetConversion(Segments* segments) const override {}
+
+  void RevertConversion(Segments* segments) const override {}
+
+  bool DeleteCandidateFromHistory(const Segments& segments,
                                   size_t segment_index,
                                   int candidate_index) const override {
     return true;
   }
 
   bool ReconstructHistory(
-      Segments *segments,
+      Segments* segments,
       const absl::string_view preceding_text) const override {
     return true;
   }
 
-  bool CommitSegmentValue(Segments *segments, size_t segment_index,
+  bool CommitSegmentValue(Segments* segments, size_t segment_index,
                           int candidate_index) const override {
     return true;
   }
 
   bool CommitPartialSuggestionSegmentValue(
-      Segments *segments, size_t segment_index, int candidate_index,
+      Segments* segments, size_t segment_index, int candidate_index,
       absl::string_view current_segment_key,
       absl::string_view new_segment_key) const override {
     return true;
   }
 
-  bool FocusSegmentValue(Segments *segments, size_t segment_index,
+  bool FocusSegmentValue(Segments* segments, size_t segment_index,
                          int candidate_index) const override {
     return true;
   }
 
-  bool CommitSegments(Segments *segments,
+  bool CommitSegments(Segments* segments,
                       absl::Span<const size_t> candidate_index) const override {
     return true;
   }
 
-  bool ResizeSegment(Segments *segments, const ConversionRequest &request,
+  bool ResizeSegment(Segments* segments, const ConversionRequest& request,
                      size_t segment_index, int offset_length) const override {
     return true;
   }
 
-  bool ResizeSegments(Segments *segments, const ConversionRequest &request,
+  bool ResizeSegments(Segments* segments, const ConversionRequest& request,
                       size_t start_segment_index,
                       absl::Span<const uint8_t> new_size_array) const override {
     return true;

@@ -34,65 +34,43 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/base/attributes.h"
-#include "absl/base/nullability.h"
+#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
-#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
-#include "base/strings/assign.h"
-#include "base/strings/japanese.h"
 #include "base/util.h"
 #include "base/vlog.h"
 #include "composer/composer.h"
+#include "converter/attribute.h"
 #include "converter/connector.h"
-#include "converter/converter_interface.h"
-#include "converter/immutable_converter_interface.h"
 #include "converter/segmenter.h"
-#include "converter/segments.h"
 #include "dictionary/pos_matcher.h"
-#include "dictionary/single_kanji_dictionary.h"
 #include "engine/modules.h"
 #include "engine/supplemental_model_interface.h"
 #include "prediction/dictionary_prediction_aggregator.h"
-#include "prediction/prediction_aggregator_interface.h"
+#include "prediction/realtime_decoder.h"
 #include "prediction/result.h"
+#include "prediction/result_filter.h"
 #include "prediction/suggestion_filter.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
 #include "request/request_util.h"
 #include "transliteration/transliteration.h"
-#include "usage_stats/usage_stats.h"
-
-#ifndef NDEBUG
-#define MOZC_DEBUG
-#endif  // NDEBUG
 
 namespace mozc::prediction {
 namespace {
 
-using ::mozc::commands::Request;
-using ::mozc::prediction::dictionary_predictor_internal::KeyValueView;
-using ::mozc::usage_stats::UsageStats;
-
-// Used to emulate positive infinity for cost. This value is set for those
-// candidates that are thought to be aggressive; thus we can eliminate such
-// candidates from suggestion or prediction. Note that for this purpose we
-// don't want to use INT_MAX because someone might further add penalty after
-// cost is set to INT_MAX, which leads to overflow and consequently aggressive
-// candidates would appear in the top results.
-constexpr int kInfinity = (2 << 20);
-
-bool IsDebug(const ConversionRequest &request) {
+bool IsDebug(const ConversionRequest& request) {
 #ifndef NDEBUG
   return true;
 #else   // NDEBUG
@@ -100,105 +78,50 @@ bool IsDebug(const ConversionRequest &request) {
 #endif  // NDEBUG
 }
 
-bool IsLatinInputMode(const ConversionRequest &request) {
+bool IsLatinInputMode(const ConversionRequest& request) {
   return request.composer().GetInputMode() == transliteration::HALF_ASCII ||
          request.composer().GetInputMode() == transliteration::FULL_ASCII;
 }
 
-bool IsMixedConversionEnabled(const Request &request) {
-  return request.mixed_conversion();
+bool IsMixedConversionEnabled(const ConversionRequest& request) {
+  return request.request().mixed_conversion();
 }
 
-bool IsTypingCorrectionEnabled(const ConversionRequest &request) {
+bool IsTypingCorrectionEnabled(const ConversionRequest& request) {
   return request.config().use_typing_correction();
 }
 
-KeyValueView GetCandidateKeyAndValue(const Result &result
-                                         ABSL_ATTRIBUTE_LIFETIME_BOUND,
-                                     const KeyValueView history) {
-  if (result.types & PredictionType::BIGRAM) {
-    // remove the prefix of history key and history value.
-    return {absl::string_view(result.key).substr(history.key.size()),
-            absl::string_view(result.value).substr(history.value.size())};
-  }
-  return {result.key, result.value};
-}
-
-// Returns the non-expanded lookup key for the result
-absl::string_view GetCandidateOriginalLookupKey(
-    absl::string_view input_key ABSL_ATTRIBUTE_LIFETIME_BOUND,
-    const Result &result ABSL_ATTRIBUTE_LIFETIME_BOUND,
-    absl::string_view history_key) {
-  if (result.non_expanded_original_key.empty()) {
-    return input_key;
-  }
-
-  absl::string_view lookup_key = result.non_expanded_original_key;
-  if (result.types & PredictionType::BIGRAM) {
-    lookup_key.remove_prefix(history_key.size());
-  }
-  return lookup_key;
-}
-
-absl::string_view GetCandidateKey(const Result &result
-                                      ABSL_ATTRIBUTE_LIFETIME_BOUND,
-                                  absl::string_view history_key) {
-  absl::string_view candidate_key = result.key;
-  if (result.types & PredictionType::BIGRAM) {
-    candidate_key.remove_prefix(history_key.size());
-  }
-  return candidate_key;
-}
-
-// Gets history key/value.
-// Returns empty strings if there's no history segment in the segments.
-KeyValueView GetHistoryKeyAndValue(
-    const Segments &segments ABSL_ATTRIBUTE_LIFETIME_BOUND) {
-  if (segments.history_segments_size() == 0) {
-    return {};
-  }
-
-  const Segment &history_segment =
-      segments.history_segment(segments.history_segments_size() - 1);
-  if (history_segment.candidates_size() == 0) {
-    return {};
-  }
-
-  return {history_segment.candidate(0).key, history_segment.candidate(0).value};
-}
-
 template <typename... Args>
-void AppendDescription(Segment::Candidate &candidate, Args &&...args) {
-  absl::StrAppend(&candidate.description,
-                  candidate.description.empty() ? "" : " ",
+void AppendDescription(Result& result, Args&&... args) {
+  absl::StrAppend(&result.description, result.description.empty() ? "" : " ",
                   std::forward<Args>(args)...);
 }
 
-void MaybeFixRealtimeTopCost(absl::string_view input_key,
-                             std::vector<Result> &results) {
+void MaybeFixRealtimeTopCost(const ConversionRequest& request,
+                             absl::Span<Result> results) {
   // Remember the minimum cost among those REALTIME
-  // candidates that have the same key length as |input_key| so that we can set
-  // a slightly smaller cost to REALTIME_TOP than these.
-  int realtime_cost_min = kInfinity;
-  Result *realtime_top_result = nullptr;
-  for (size_t i = 0; i < results.size(); ++i) {
-    const Result &result = results[i];
+  // candidates that have the same key length as |request_key| so that we can
+  // set a slightly smaller cost to REALTIME_TOP than these.
+  int realtime_cost_min = Result::kInvalidCost;
+  Result* realtime_top_result = nullptr;
+  for (Result& result : results) {
     if (result.types & PredictionType::REALTIME_TOP) {
-      realtime_top_result = &results[i];
+      realtime_top_result = &result;
     }
 
     // Update the minimum cost for REALTIME candidates that have the same key
-    // length as input_key.
+    // length as request_key.
     if (result.types & PredictionType::REALTIME &&
         result.cost < realtime_cost_min &&
-        result.key.size() == input_key.size()) {
+        result.key.size() == request.key().size()) {
       realtime_cost_min = result.cost;
     }
   }
 
   // Ensure that the REALTIME_TOP candidate has relatively smaller cost than
   // those of REALTIME candidates.
-  if (realtime_top_result != nullptr && realtime_cost_min != kInfinity) {
+  if (realtime_top_result != nullptr &&
+      realtime_cost_min != Result::kInvalidCost) {
     realtime_top_result->cost = std::max(0, realtime_cost_min - 10);
   }
 }
@@ -206,278 +129,194 @@ void MaybeFixRealtimeTopCost(absl::string_view input_key,
 }  // namespace
 
 DictionaryPredictor::DictionaryPredictor(
-    const engine::Modules &modules, const ConverterInterface *converter,
-    const ImmutableConverterInterface *immutable_converter)
-    : DictionaryPredictor(
-          "DictionaryPredictor", modules,
-          std::make_unique<prediction::DictionaryPredictionAggregator>(
-              modules, converter, immutable_converter),
-          immutable_converter) {}
+    const engine::Modules& modules,
+    std::unique_ptr<const RealtimeDecoder> decoder)
+    : DictionaryPredictor(modules, nullptr, std::move(decoder)) {
+  // Explicitly allocate aggregator_ as decoder is unique_ptr and cannot be
+  // passed to the constructor of DictionaryPredictor and
+  // DictionaryPredictionAggregator at the same time.
+  aggregator_ = std::make_unique<prediction::DictionaryPredictionAggregator>(
+      modules, *decoder_);
+}
 
 DictionaryPredictor::DictionaryPredictor(
-    std::string predictor_name, const engine::Modules &modules,
-    std::unique_ptr<const prediction::PredictionAggregatorInterface> aggregator,
-    const ImmutableConverterInterface *immutable_converter)
+    const engine::Modules& modules,
+    std::unique_ptr<const DictionaryPredictionAggregatorInterface> aggregator,
+    std::unique_ptr<const RealtimeDecoder> decoder)
     : aggregator_(std::move(aggregator)),
-      immutable_converter_(immutable_converter),
+      decoder_(std::move(decoder)),
       connector_(modules.GetConnector()),
       segmenter_(modules.GetSegmenter()),
       suggestion_filter_(modules.GetSuggestionFilter()),
-      single_kanji_dictionary_(
-          std::make_unique<dictionary::SingleKanjiDictionary>(
-              modules.GetDataManager())),
-      pos_matcher_(*modules.GetPosMatcher()),
+      pos_matcher_(modules.GetPosMatcher()),
       general_symbol_id_(pos_matcher_.GetGeneralSymbolId()),
-      predictor_name_(std::move(predictor_name)),
       modules_(modules) {}
 
-void DictionaryPredictor::Finish(const ConversionRequest &request,
-                                 Segments *segments) {
-  if (request.request_type() == ConversionRequest::REVERSE_CONVERSION) {
-    // Do nothing for REVERSE_CONVERSION.
-    return;
-  }
-
-  const Segment &segment = segments->conversion_segment(0);
-  if (segment.candidates_size() < 1) {
-    MOZC_VLOG(2) << "candidates size < 1";
-    return;
-  }
-
-  const Segment::Candidate &candidate = segment.candidate(0);
-  if (segment.segment_type() != Segment::FIXED_VALUE) {
-    MOZC_VLOG(2) << "segment is not FIXED_VALUE" << candidate.value;
-    return;
-  }
-
-  MaybeRecordUsageStats(candidate);
-}
-
-void DictionaryPredictor::MaybeRecordUsageStats(
-    const Segment::Candidate &candidate) const {
-  if (candidate.source_info &
-      Segment::Candidate::DICTIONARY_PREDICTOR_ZERO_QUERY_NONE) {
-    UsageStats::IncrementCount("CommitDictionaryPredictorZeroQueryTypeNone");
-  }
-
-  if (candidate.source_info &
-      Segment::Candidate::DICTIONARY_PREDICTOR_ZERO_QUERY_NUMBER_SUFFIX) {
-    UsageStats::IncrementCount(
-        "CommitDictionaryPredictorZeroQueryTypeNumberSuffix");
-  }
-
-  if (candidate.source_info &
-      Segment::Candidate::DICTIONARY_PREDICTOR_ZERO_QUERY_EMOTICON) {
-    UsageStats::IncrementCount(
-        "CommitDictionaryPredictorZeroQueryTypeEmoticon");
-  }
-
-  if (candidate.source_info &
-      Segment::Candidate::DICTIONARY_PREDICTOR_ZERO_QUERY_EMOJI) {
-    UsageStats::IncrementCount("CommitDictionaryPredictorZeroQueryTypeEmoji");
-  }
-
-  if (candidate.source_info &
-      Segment::Candidate::DICTIONARY_PREDICTOR_ZERO_QUERY_BIGRAM) {
-    UsageStats::IncrementCount("CommitDictionaryPredictorZeroQueryTypeBigram");
-  }
-
-  if (candidate.source_info &
-      Segment::Candidate::DICTIONARY_PREDICTOR_ZERO_QUERY_SUFFIX) {
-    UsageStats::IncrementCount("CommitDictionaryPredictorZeroQueryTypeSuffix");
-  }
-}
-
-bool DictionaryPredictor::PredictForRequest(const ConversionRequest &request,
-                                            Segments *segments) const {
-  if (segments == nullptr) {
-    return false;
-  }
+std::vector<Result> DictionaryPredictor::Predict(
+    const ConversionRequest& request) const {
   if (request.request_type() == ConversionRequest::CONVERSION) {
     MOZC_VLOG(2) << "request type is CONVERSION";
-    return false;
-  }
-  if (segments->conversion_segments_size() < 1) {
-    MOZC_VLOG(2) << "segment size < 1";
-    return false;
+    return {};
   }
 
-  std::vector<Result> results =
-      aggregator_->AggregateResults(request, *segments);
-  RewriteResultsForPrediction(request, *segments, &results);
+  std::vector<Result> results;
 
-  // Explicitly populate the typing corrected results.
-  MaybePopulateTypingCorrectedResults(request, *segments, &results);
+  // TODO(taku): Separate DesktopPredictor and MixedDecodingPredictor.
+  if (IsMixedConversionEnabled(request)) {
+    std::vector<Result> literal_results =
+        aggregator_->AggregateResultsForMixedConversion(request);
+    std::vector<Result> tc_results =
+        AggregateTypingCorrectedResultsForMixedConversion(request);
+    absl::c_move(literal_results, std::back_inserter(results));
+    absl::c_move(tc_results, std::back_inserter(results));
+  } else {
+    results = aggregator_->AggregateResultsForDesktop(request);
+  }
 
-  MaybeRescoreResults(request, *segments, absl::MakeSpan(results));
+  RewriteResultsForPrediction(request, absl::MakeSpan(results));
+
+  MaybeRescoreResults(request, absl::MakeSpan(results));
 
   // `results` are no longer used.
-  return AddPredictionToCandidates(request, segments, std::move(results));
+  return RerankAndFilterResults(request, std::move(results));
 }
 
 void DictionaryPredictor::RewriteResultsForPrediction(
-    const ConversionRequest &request, const Segments &segments,
-    std::vector<Result> *results) const {
-  if (results->empty()) {
-    return;
-  }
-
+    const ConversionRequest& request, absl::Span<Result> results) const {
   // Mixed conversion is the feature that mixes prediction and
   // conversion, meaning that results may include the candidates whose
   // key is exactly the same as the composition.  This mode is used in mobile.
-  const bool is_mixed_conversion = IsMixedConversionEnabled(request.request());
+  const bool is_mixed_conversion = IsMixedConversionEnabled(request);
 
   if (is_mixed_conversion) {
-    SetPredictionCostForMixedConversion(request, segments, results);
+    SetPredictionCostForMixedConversion(request, results);
   } else {
-    SetPredictionCost(request.request_type(), segments, results);
+    SetPredictionCost(request, results);
   }
+
+  MaybeFixRealtimeTopCost(request, results);
 
   if (!is_mixed_conversion) {
-    const size_t input_key_len =
-        Util::CharsLen(segments.conversion_segment(0).key());
-    RemoveMissSpelledCandidates(input_key_len, results);
+    RemoveMissSpelledCandidates(request, results);
   }
 }
 
-void DictionaryPredictor::MaybePopulateTypingCorrectedResults(
-    const ConversionRequest &request, const Segments &segments,
-    std::vector<Result> *results) const {
-  if (!IsTypingCorrectionEnabled(request) || results->empty()) {
-    return;
-  }
-
-  const size_t key_len = Util::CharsLen(segments.conversion_segment(0).key());
+std::vector<Result>
+DictionaryPredictor::AggregateTypingCorrectedResultsForMixedConversion(
+    const ConversionRequest& request) const {
   constexpr int kMinTypingCorrectionKeyLen = 3;
-  if (key_len < kMinTypingCorrectionKeyLen) {
-    return;
+  if (!IsTypingCorrectionEnabled(request) ||
+      Util::CharsLen(request.key()) < kMinTypingCorrectionKeyLen) {
+    return {};
   }
 
-  std::vector<Result> typing_corrected_results =
-      aggregator_->AggregateTypingCorrectedResults(request, segments);
-  RewriteResultsForPrediction(request, segments, &typing_corrected_results);
-
-  for (auto &result : typing_corrected_results) {
-    results->emplace_back(std::move(result));
-  }
+  return aggregator_->AggregateTypingCorrectedResultsForMixedConversion(
+      request);
 }
 
-bool DictionaryPredictor::AddPredictionToCandidates(
-    const ConversionRequest &request, Segments *segments,
-    std::vector<Result> results) const {
-  DCHECK(segments);
-
-  const KeyValueView history = GetHistoryKeyAndValue(*segments);
-
-  Segment *segment = segments->mutable_conversion_segment(0);
-  DCHECK(segment);
+std::vector<Result> DictionaryPredictor::RerankAndFilterResults(
+    const ConversionRequest& request, std::vector<Result> results) const {
+  const bool cursor_at_tail =
+      request.composer().GetCursor() == request.composer().GetLength();
 
   // Instead of sorting all the results, we construct a heap.
   // This is done in linear time and
   // we can pop as many results as we need efficiently.
   std::make_heap(results.begin(), results.end(),
-                 [](const Result &lhs, const Result &rhs) {
+                 [](const Result& lhs, const Result& rhs) {
                    return ResultCostLess()(rhs, lhs);
                  });
 
   const size_t max_candidates_size = std::min(
       request.max_dictionary_prediction_candidates_size(), results.size());
 
-  ResultFilter filter(request, *segments, pos_matcher_, suggestion_filter_);
+  filter::ResultFilter filter(request, pos_matcher_, connector_,
+                              suggestion_filter_);
 
-  // TODO(taku): Sets more advanced debug info depending on the verbose_level.
   absl::flat_hash_map<std::string, int32_t> merged_types;
   if (IsDebug(request)) {
-    for (const auto &result : results) {
+    for (const auto& result : results) {
       if (!result.removed) {
         merged_types[result.value] |= result.types;
       }
     }
   }
 
-#ifdef MOZC_DEBUG
-  auto add_debug_candidate = [&](Result result, const absl::string_view log) {
-    absl::StrAppend(&result.log, log);
-    Segment::Candidate candidate;
-    FillCandidate(request, result, GetCandidateKeyAndValue(result, history),
-                  merged_types, &candidate);
-    segment->removed_candidates_for_debug_.push_back(std::move(candidate));
-  };
-#define MOZC_ADD_DEBUG_CANDIDATE(result, log) \
-  add_debug_candidate(result, MOZC_WORD_LOG_MESSAGE(log))
-
-#else  // MOZC_DEBUG
-#define MOZC_ADD_DEBUG_CANDIDATE(result, log) \
-  {                                           \
-  }
-
-#endif  // MOZC_DEBUG
-
   std::shared_ptr<Result> prev_top_result;
   std::vector<Result> final_results;
 
   for (size_t i = 0; i < results.size(); ++i) {
     std::pop_heap(results.begin(), results.end() - i,
-                  [](const Result &lhs, const Result &rhs) {
+                  [](const Result& lhs, const Result& rhs) {
                     return ResultCostLess()(rhs, lhs);
                   });
-    Result &result = results[results.size() - i - 1];
-
+    Result& result = results[results.size() - i - 1];
     if (final_results.size() >= max_candidates_size ||
-        result.cost >= kInfinity) {
+        result.cost >= Result::kInvalidCost) {
       break;
     }
 
-    if (i == 0 && (prev_top_result = MaybeGetPreviousTopResult(
-                       result, request, *segments)) != nullptr) {
+    if (i == 0 && (prev_top_result =
+                       MaybeGetPreviousTopResult(result, request)) != nullptr) {
       final_results.emplace_back(*prev_top_result);
     }
 
-    std::string log_message;
-    if (filter.ShouldRemove(result, final_results.size(), &log_message)) {
-      MOZC_ADD_DEBUG_CANDIDATE(result, log_message);
+    if (filter.ShouldRemove(result, final_results.size())) {
       continue;
+    }
+
+    if ((result.candidate_attributes &
+         converter::Attribute::PARTIALLY_KEY_CONSUMED) &&
+        cursor_at_tail) {
+      result.candidate_attributes |=
+          converter::Attribute::AUTO_PARTIAL_SUGGESTION;
+    }
+
+    if ((!(result.candidate_attributes &
+           converter::Attribute::SPELLING_CORRECTION) &&
+         IsLatinInputMode(request)) ||
+        (result.types & PredictionType::SUFFIX)) {
+      result.candidate_attributes |=
+          converter::Attribute::NO_VARIANTS_EXPANSION;
+      result.candidate_attributes |= converter::Attribute::NO_EXTRA_DESCRIPTION;
+    }
+
+    if (result.types & PredictionType::TYPING_CORRECTION) {
+      result.candidate_attributes |= converter::Attribute::TYPING_CORRECTION;
     }
 
     final_results.emplace_back(std::move(result));
   }
 
-  MaybeApplyPostCorrection(request, *segments, final_results);
+  MaybeApplyPostCorrection(request, final_results);
 
-  // Fill segments from final_results_ptrs.
-  for (const Result &result : final_results) {
-    FillCandidate(request, result, GetCandidateKeyAndValue(result, history),
-                  merged_types, segment->push_back_candidate());
+  if (IsDebug(request)) {
+    for (auto& result : final_results) {
+      const auto it = merged_types.find(result.value);
+      const int32_t types = it == merged_types.end() ? 0 : it->second;
+      AppendDescription(result, GetPredictionTypeDebugString(types));
+    }
   }
 
-  if (IsDebug(request) && modules_.GetSupplementalModel()) {
-    AddRescoringDebugDescription(segments);
-  }
-
-  return !final_results.empty();
-#undef MOZC_ADD_DEBUG_CANDIDATE
+  return final_results;
 }
 
 void DictionaryPredictor::MaybeApplyPostCorrection(
-    const ConversionRequest &request, const Segments &segments,
-    std::vector<Result> &results) const {
+    const ConversionRequest& request, std::vector<Result>& results) const {
   // b/363902660:
-  // Stop applying post correction when typing correction is disabled.
-  // We may want to use other conditions if we want to enable post correction
-  // separately.
-  if (!IsTypingCorrectionEnabled(request)) {
+  // Stop applying post correction when handwriting mode.
+  if (request_util::IsHandwriting(request)) {
     return;
   }
-  const engine::SupplementalModelInterface *supplemental_model =
-      modules_.GetSupplementalModel();
-  if (supplemental_model == nullptr) return;
-  supplemental_model->PostCorrect(request, segments, results);
+
+  // Apply PostCorrection.
+  modules_.GetSupplementalModel().PostCorrect(request, results);
 }
 
 int DictionaryPredictor::CalculateSingleKanjiCostOffset(
-    const ConversionRequest &request, uint16_t rid,
-    const absl::string_view input_key, absl::Span<const Result> results,
-    absl::flat_hash_map<PrefixPenaltyKey, int> *cache) const {
+    const ConversionRequest& request, uint16_t rid,
+    absl::Span<const Result> results,
+    absl::flat_hash_map<PrefixPenaltyKey, int>* cache) const {
   // Make a map from reference value to min-cost result.
   // Reference entry:
   //  - single-char REALTIME or UNIGRAM entry
@@ -487,7 +326,7 @@ int DictionaryPredictor::CalculateSingleKanjiCostOffset(
   // as the fallback.
   absl::flat_hash_map<absl::string_view, int> min_cost_map;
   int fallback_cost = -1;
-  for (const auto &result : results) {
+  for (const auto& result : results) {
     if (result.removed) {
       continue;
     }
@@ -496,7 +335,7 @@ int DictionaryPredictor::CalculateSingleKanjiCostOffset(
       continue;
     }
 
-    if (result.value == input_key) {
+    if (result.value == request.key()) {
       const int cost = GetLMCost(result, rid);
       if (fallback_cost == -1 || fallback_cost > cost) {
         fallback_cost = cost;
@@ -509,9 +348,8 @@ int DictionaryPredictor::CalculateSingleKanjiCostOffset(
     }
     int lm_cost = GetLMCost(result, rid);
     if (result.candidate_attributes &
-        Segment::Candidate::PARTIALLY_KEY_CONSUMED) {
-      lm_cost += CalculatePrefixPenalty(request, input_key, result,
-                                        immutable_converter_, cache);
+        converter::Attribute::PARTIALLY_KEY_CONSUMED) {
+      lm_cost += CalculatePrefixPenalty(request, result, cache);
     }
     const auto it = min_cost_map.find(result.value);
     if (it == min_cost_map.end()) {
@@ -524,7 +362,7 @@ int DictionaryPredictor::CalculateSingleKanjiCostOffset(
   // Use the wcost of the highest cost to calculate the single kanji cost
   // offset.
   int single_kanji_max_cost = 0;
-  for (const auto &it : min_cost_map) {
+  for (const auto& it : min_cost_map) {
     single_kanji_max_cost = std::max(single_kanji_max_cost, it.second);
   }
   single_kanji_max_cost = std::max(single_kanji_max_cost, fallback_cost);
@@ -538,273 +376,9 @@ int DictionaryPredictor::CalculateSingleKanjiCostOffset(
   return wcost_diff + kSingleKanjiPredictionCostOffset;
 }
 
-DictionaryPredictor::ResultFilter::ResultFilter(
-    const ConversionRequest &request, const Segments &segments,
-    dictionary::PosMatcher pos_matcher,
-    const SuggestionFilter &suggestion_filter)
-    : input_key_(segments.conversion_segment(0).key()),
-      input_key_len_(Util::CharsLen(input_key_)),
-      pos_matcher_(pos_matcher),
-      suggestion_filter_(suggestion_filter),
-      is_mixed_conversion_(IsMixedConversionEnabled(request.request())),
-      auto_partial_suggestion_(
-          request_util::IsAutoPartialSuggestionEnabled(request)),
-      include_exact_key_(IsMixedConversionEnabled(request.request())),
-      is_handwriting_(request_util::IsHandwriting(request)) {
-  const KeyValueView history = GetHistoryKeyAndValue(segments);
-  strings::Assign(history_key_, history.key);
-  strings::Assign(history_value_, history.value);
-  exact_bigram_key_ = absl::StrCat(history.key, input_key_);
-
-  suffix_count_ = 0;
-  predictive_count_ = 0;
-  realtime_count_ = 0;
-  prefix_tc_count_ = 0;
-  tc_count_ = 0;
-}
-
-bool DictionaryPredictor::ResultFilter::ShouldRemove(const Result &result,
-                                                     int added_num,
-                                                     std::string *log_message) {
-  if (result.removed) {
-    *log_message = "Removed flag is on";
-    return true;
-  }
-
-  if (result.cost >= kInfinity) {
-    *log_message = "Too large cost";
-    return true;
-  }
-
-  if (!auto_partial_suggestion_ &&
-      (result.candidate_attributes &
-       Segment::Candidate::PARTIALLY_KEY_CONSUMED)) {
-    *log_message = "Auto partial suggestion disabled";
-    return true;
-  }
-
-  // When |include_exact_key| is true, we don't filter the results
-  // which have the exactly same key as the input even if it's a bad
-  // suggestion.
-  if (!(include_exact_key_ && (result.key == input_key_)) &&
-      suggestion_filter_.IsBadSuggestion(result.value)) {
-    *log_message = "Bad suggestion";
-    return true;
-  }
-
-  if (is_handwriting_) {
-    // Only unigram results are appended for handwriting and we do not need to
-    // apply filtering.
-    return false;
-  }
-
-  // Don't suggest exactly the same candidate as key.
-  // if |include_exact_key| is true, that's not the case.
-  if (!include_exact_key_ && !(result.types & PredictionType::REALTIME) &&
-      (((result.types & PredictionType::BIGRAM) &&
-        exact_bigram_key_ == result.value) ||
-       (!(result.types & PredictionType::BIGRAM) &&
-        input_key_ == result.value))) {
-    *log_message = "Key == candidate";
-    return true;
-  }
-
-  const KeyValueView candidate =
-      GetCandidateKeyAndValue(result, {history_key_, history_value_});
-
-  if (seen_.contains(candidate.value)) {
-    *log_message = "Duplicated";
-    return true;
-  }
-
-  // User input: "おーすとり" (len = 5)
-  // key/value:  "おーすとりら" "オーストラリア" (miss match pos = 4)
-  if ((result.candidate_attributes & Segment::Candidate::SPELLING_CORRECTION) &&
-      candidate.key != input_key_ &&
-      input_key_len_ <=
-          GetMissSpelledPosition(candidate.key, candidate.value) + 1) {
-    *log_message = "Spelling correction";
-    return true;
-  }
-
-  if ((result.types & PredictionType::SUFFIX) && suffix_count_++ >= 20) {
-    // TODO(toshiyuki): Need refactoring for controlling suffix
-    // prediction number after we will fix the appropriate number.
-    *log_message = "Added suffix >= 20";
-    return true;
-  }
-
-  if (!is_mixed_conversion_) {
-    return CheckDupAndReturn(candidate.value, result, log_message);
-  }
-
-  // Suppress long candidates to show more candidates in the candidate view.
-  const size_t lookup_key_len = Util::CharsLen(
-      GetCandidateOriginalLookupKey(input_key_, result, history_key_));
-  const size_t candidate_key_len = Util::CharsLen(candidate.key);
-  if (lookup_key_len > 0 &&  // Do not filter for zero query
-      lookup_key_len < candidate_key_len &&
-      (predictive_count_++ >= 3 || added_num >= 10)) {
-    *log_message = absl::StrCat("Added predictive (",
-                                GetPredictionTypeDebugString(result.types),
-                                ") >= 3 || added >= 10");
-    return true;
-  }
-  if ((result.types & PredictionType::REALTIME) &&
-      // Do not remove one-segment / on-char realtime candidates
-      // example:
-      // - "勝った" for the reading, "かった".
-      // - "勝" for the reading, "かつ".
-      result.inner_segment_boundary.size() >= 2 &&
-      Util::CharsLen(result.value) != 1 &&
-      (realtime_count_++ >= 3 || added_num >= 5)) {
-    *log_message = "Added realtime >= 3 || added >= 5";
-    return true;
-  }
-
-  constexpr int kTcMaxCount = 3;
-  constexpr int kTcMaxRank = 10;
-
-  if ((result.types & PredictionType::TYPING_CORRECTION) &&
-      (tc_count_++ >= kTcMaxCount || added_num >= kTcMaxRank)) {
-    *log_message = absl::StrCat("Added typing correction >= ", kTcMaxCount,
-                                " || added >= ", kTcMaxRank);
-    return true;
-  }
-  if ((result.types & PredictionType::PREFIX) &&
-      (result.candidate_attributes & Segment::Candidate::TYPING_CORRECTION) &&
-      (prefix_tc_count_++ >= 3 || added_num >= 10)) {
-    *log_message = "Added prefix typing correction >= 3 || added >= 10";
-    return true;
-  }
-
-  return CheckDupAndReturn(candidate.value, result, log_message);
-}
-
-bool DictionaryPredictor::ResultFilter::CheckDupAndReturn(
-    const absl::string_view value, const Result &result,
-    std::string *log_message) {
-  if (seen_.contains(value)) {
-    *log_message = "Duplicated";
-    return true;
-  }
-  seen_.emplace(value);
-  return false;
-}
-
-void DictionaryPredictor::FillCandidate(
-    const ConversionRequest &request, const Result &result,
-    const KeyValueView key_value,
-    const absl::flat_hash_map<std::string, int32_t> &merged_types,
-    Segment::Candidate *candidate) const {
-  DCHECK(candidate);
-
-  const bool cursor_at_tail =
-      request.composer().GetCursor() == request.composer().GetLength();
-
-  strings::Assign(candidate->content_key, key_value.key);
-  strings::Assign(candidate->content_value, key_value.value);
-  strings::Assign(candidate->key, key_value.key);
-  strings::Assign(candidate->value, key_value.value);
-  candidate->lid = result.lid;
-  candidate->rid = result.rid;
-  candidate->wcost = result.wcost;
-  candidate->cost = result.cost;
-  candidate->attributes = result.candidate_attributes;
-  if ((!(candidate->attributes & Segment::Candidate::SPELLING_CORRECTION) &&
-       IsLatinInputMode(request)) ||
-      (result.types & PredictionType::SUFFIX)) {
-    candidate->attributes |= Segment::Candidate::NO_VARIANTS_EXPANSION;
-    candidate->attributes |= Segment::Candidate::NO_EXTRA_DESCRIPTION;
-  }
-  if (candidate->attributes & Segment::Candidate::PARTIALLY_KEY_CONSUMED) {
-    candidate->consumed_key_size = result.consumed_key_size;
-    // There are two scenarios to reach here.
-    // 1. Auto partial suggestion.
-    //    e.g. composition わたしのなまえ| -> candidate 私の
-    // 2. Partial suggestion.
-    //    e.g. composition わたしの|なまえ -> candidate 私の
-    // To distinguish auto partial suggestion from (non-auto) partial
-    // suggestion, see the cursor position. If the cursor is at the tail
-    // of the composition, this is auto partial suggestion.
-    if (cursor_at_tail) {
-      candidate->attributes |= Segment::Candidate::AUTO_PARTIAL_SUGGESTION;
-    }
-  }
-  candidate->source_info = result.source_info;
-  if (result.types & PredictionType::REALTIME) {
-    candidate->inner_segment_boundary = result.inner_segment_boundary;
-  }
-  if (result.types & PredictionType::TYPING_CORRECTION) {
-    candidate->attributes |= Segment::Candidate::TYPING_CORRECTION;
-  }
-  SetDescription(result.types, candidate);
-  if (IsDebug(request)) {
-    auto it = merged_types.find(result.value);
-    SetDebugDescription(it == merged_types.end() ? 0 : it->second, candidate);
-    candidate->cost_before_rescoring = result.cost_before_rescoring;
-  }
-#ifdef MOZC_DEBUG
-  absl::StrAppend(&candidate->log, "\n", result.log);
-#endif  // MOZC_DEBUG
-}
-
-void DictionaryPredictor::SetDescription(PredictionTypes types,
-                                         Segment::Candidate *candidate) const {
-  if (candidate->description.empty()) {
-    single_kanji_dictionary_->GenerateDescription(candidate->value,
-                                                  &candidate->description);
-  }
-}
-
-void DictionaryPredictor::SetDebugDescription(PredictionTypes types,
-                                              Segment::Candidate *candidate) {
-  std::string debug_desc = GetPredictionTypeDebugString(types);
-  // Note that description for TYPING_CORRECTION is omitted
-  // because it is appended by SetDescription.
-  if (!debug_desc.empty()) {
-    AppendDescription(*candidate, debug_desc);
-  }
-}
-
-std::string DictionaryPredictor::GetPredictionTypeDebugString(
-    PredictionTypes types) {
-  std::string debug_desc;
-  if (types & PredictionType::UNIGRAM) {
-    debug_desc.append(1, 'U');
-  }
-  if (types & PredictionType::BIGRAM) {
-    debug_desc.append(1, 'B');
-  }
-  if (types & PredictionType::REALTIME_TOP) {
-    debug_desc.append("R1");
-  } else if (types & PredictionType::REALTIME) {
-    debug_desc.append(1, 'R');
-  }
-  if (types & PredictionType::SUFFIX) {
-    debug_desc.append(1, 'S');
-  }
-  if (types & PredictionType::ENGLISH) {
-    debug_desc.append(1, 'E');
-  }
-  if (types & PredictionType::TYPING_CORRECTION) {
-    debug_desc.append(1, 'T');
-  }
-  if (types & PredictionType::TYPING_COMPLETION) {
-    debug_desc.append(1, 'C');
-  }
-  if (types & PredictionType::SUPPLEMENTAL_MODEL) {
-    debug_desc.append(1, 'X');
-  }
-  if (types & PredictionType::KEY_EXPANDED_IN_DICTIONARY) {
-    debug_desc.append(1, 'K');
-  }
-  return debug_desc;
-}
-
 // Returns cost for |result| when it's transitioned from |rid|.  Suffix penalty
 // is also added for non-realtime results.
-int DictionaryPredictor::GetLMCost(const Result &result, int rid) const {
+int DictionaryPredictor::GetLMCost(const Result& result, int rid) const {
   const int cost_with_context = connector_.GetTransitionCost(rid, result.lid);
 
   int lm_cost = 0;
@@ -829,47 +403,38 @@ int DictionaryPredictor::GetLMCost(const Result &result, int rid) const {
     // Realtime conversion already adds prefix/suffix penalties to the result.
     // Note that we don't add prefix penalty the role of "bunsetsu" is
     // ambiguous on zero-query suggestion.
-    lm_cost += segmenter_->GetSuffixPenalty(result.rid);
+    lm_cost += segmenter_.GetSuffixPenalty(result.rid);
   }
 
   return lm_cost;
 }
 
-void DictionaryPredictor::SetPredictionCost(
-    ConversionRequest::RequestType request_type, const Segments &segments,
-    std::vector<Result> *results) const {
-  DCHECK(results);
-  int rid = 0;  // 0 (BOS) is default
-  if (segments.history_segments_size() > 0) {
-    const Segment &history_segment =
-        segments.history_segment(segments.history_segments_size() - 1);
-    if (history_segment.candidates_size() > 0) {
-      rid = history_segment.candidate(0).rid;  // use history segment's id
-    }
-  }
+void DictionaryPredictor::SetPredictionCost(const ConversionRequest& request,
+                                            absl::Span<Result> results) const {
+  const int history_rid = request.converter_history_rid();
 
-  const std::string &input_key = segments.conversion_segment(0).key();
-  const KeyValueView history = GetHistoryKeyAndValue(segments);
-  const std::string bigram_key = absl::StrCat(history.key, history.key);
-  const bool is_suggestion = (request_type == ConversionRequest::SUGGESTION);
+  const bool is_suggestion =
+      (request.request_type() == ConversionRequest::SUGGESTION);
 
   // use the same scoring function for both unigram/bigram.
   // Bigram will be boosted because we pass the previous
   // key as a context information.
-  const size_t bigram_key_len = Util::CharsLen(bigram_key);
-  const size_t unigram_key_len = Util::CharsLen(input_key);
+  const size_t history_key_len =
+      Util::CharsLen(request.converter_history_key(1));
+  const size_t request_key_len = Util::CharsLen(request.key());
 
-  for (size_t i = 0; i < results->size(); ++i) {
-    const Result &result = (*results)[i];
-    const int cost = GetLMCost(result, rid);
-    const size_t query_len = (result.types & PredictionType::BIGRAM)
-                                 ? bigram_key_len
-                                 : unigram_key_len;
-    const size_t key_len = Util::CharsLen(result.key);
+  for (Result& result : results) {
+    const int cost = GetLMCost(result, history_rid);
+    size_t query_len = request_key_len;
+    size_t key_len = Util::CharsLen(result.key);
+    if (result.types & PredictionType::BIGRAM) {
+      query_len += history_key_len;
+      key_len += history_key_len;
+    }
 
     if (IsAggressiveSuggestion(query_len, key_len, cost, is_suggestion,
-                               results->size())) {
-      (*results)[i].cost = kInfinity;
+                               results.size())) {
+      result.cost = Result::kInvalidCost;
       continue;
     }
 
@@ -911,45 +476,31 @@ void DictionaryPredictor::SetPredictionCost(
     //
     // TODO(team): want find the best parameter instead of kCostFactor.
     constexpr int kCostFactor = 500;
-    (*results)[i].cost =
+    result.cost =
         cost - kCostFactor * log(1.0 + std::max<int>(0, key_len - query_len));
   }
-
-  MaybeFixRealtimeTopCost(input_key, *results);
 }
 
 void DictionaryPredictor::SetPredictionCostForMixedConversion(
-    const ConversionRequest &request, const Segments &segments,
-    std::vector<Result> *results) const {
-  DCHECK(results);
-
+    const ConversionRequest& request, absl::Span<Result> results) const {
   // ranking for mobile
-  int rid = 0;        // 0 (BOS) is default
-  int prev_cost = 0;  // cost of the last history candidate.
+  const int history_rid =
+      request.converter_history_rid();  // 0 (BOS) is default
 
-  if (segments.history_segments_size() > 0) {
-    const Segment &history_segment =
-        segments.history_segment(segments.history_segments_size() - 1);
-    if (history_segment.candidates_size() > 0) {
-      rid = history_segment.candidate(0).rid;  // use history segment's id
-      prev_cost = history_segment.candidate(0).cost;
-      if (prev_cost == 0) {
-        // if prev_cost is set to be 0 for some reason, use default cost.
-        prev_cost = 5000;
-      }
-    }
+  // cost of the last history candidate.
+  int prev_cost = request.converter_history_cost();
+  if (prev_cost == 0) {
+    // if prev_cost is set to be 0 for some reason, use default cost.
+    prev_cost = 5000;
   }
 
   absl::flat_hash_map<PrefixPenaltyKey, int32_t> prefix_penalty_cache;
-  const std::string &input_key = segments.conversion_segment(0).key();
   const int single_kanji_offset = CalculateSingleKanjiCostOffset(
-      request, rid, input_key, *results, &prefix_penalty_cache);
+      request, history_rid, results, &prefix_penalty_cache);
 
-  const KeyValueView history = GetHistoryKeyAndValue(segments);
-
-  for (Result &result : *results) {
-    int cost = GetLMCost(result, rid);
-    MOZC_WORD_LOG(result, absl::StrCat("GetLMCost: ", cost));
+  for (Result& result : results) {
+    int cost = GetLMCost(result, history_rid);
+    MOZC_WORD_LOG(result, "GetLMCost: ", cost);
     if (result.lid == result.rid && !pos_matcher_.IsSuffixWord(result.rid) &&
         !pos_matcher_.IsFunctional(result.rid) &&
         !pos_matcher_.IsWeakCompoundVerbSuffix(result.rid)) {
@@ -959,8 +510,8 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
       // Suffix penalty is added in the above GetLMCost(), which is also used
       // for calculating non-mobile prediction cost. So we modify the cost
       // calculation here for now.
-      cost -= segmenter_->GetSuffixPenalty(result.rid);
-      MOZC_WORD_LOG(result, absl::StrCat("Cancel Suffix Penalty: ", cost));
+      cost -= segmenter_.GetSuffixPenalty(result.rid);
+      MOZC_WORD_LOG(result, "Cancel Suffix Penalty: ", cost);
     }
 
     // Demote filtered word here, because they are not filtered for exact match.
@@ -971,7 +522,7 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
       // 3453 = 500 * log(1000)
       constexpr int kBadSuggestionPenalty = 3453;
       cost += kBadSuggestionPenalty;
-      MOZC_WORD_LOG(result, absl::StrCat("BadSuggestionPenalty: ", cost));
+      MOZC_WORD_LOG(result, "BadSuggestionPenalty: ", cost);
     }
 
     if (result.types & PredictionType::BIGRAM) {
@@ -995,7 +546,7 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
       // too much.
       // Align the cost here before applying other cost modifications.
       cost = std::max(1, cost);
-      MOZC_WORD_LOG(result, absl::StrCat("Bigram: ", cost));
+      MOZC_WORD_LOG(result, "Bigram: ", cost);
     }
 
     if (result.types & PredictionType::SINGLE_KANJI) {
@@ -1005,10 +556,10 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
         // cost should be larger than 0.
         cost = result.wcost + 1;
       }
-      MOZC_WORD_LOG(result, absl::StrCat("SingleKanji: ", cost));
+      MOZC_WORD_LOG(result, "SingleKanji: ", cost);
     }
 
-    if (result.candidate_attributes & Segment::Candidate::USER_DICTIONARY &&
+    if (result.candidate_attributes & converter::Attribute::USER_DICTIONARY &&
         result.lid != general_symbol_id_) {
       // Decrease cost for words from user dictionary in order to promote them,
       // provided that it is not a general symbol (Note: emoticons are mapped to
@@ -1019,7 +570,7 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
       constexpr int kUserDictionaryCostUpperLimit = 1000;
       cost = std::min(cost - kUserDictionaryPromotionFactor,
                       kUserDictionaryCostUpperLimit);
-      MOZC_WORD_LOG(result, absl::StrCat("User dictionary: ", cost));
+      MOZC_WORD_LOG(result, "User dictionary: ", cost);
     }
 
     // Demote predictive results for making exact candidates to have higher
@@ -1027,10 +578,8 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
     // - Users expect the candidates for the input key on the candidates.
     // - We want to show candidates as many as possible in the limited
     //   candidates area.
-    const size_t candidate_lookup_key_len = Util::CharsLen(
-        GetCandidateOriginalLookupKey(input_key, result, history.key));
-    const size_t candidate_key_len =
-        Util::CharsLen(GetCandidateKey(result, history.key));
+    const size_t candidate_lookup_key_len = Util::CharsLen(request.key());
+    const size_t candidate_key_len = Util::CharsLen(result.key);
     if (!(result.types & PredictionType::SUFFIX) &&
         candidate_key_len > candidate_lookup_key_len) {
       const size_t predicted_key_len =
@@ -1039,72 +588,40 @@ void DictionaryPredictor::SetPredictionCostForMixedConversion(
       // See also: mozc/converter/candidate_filter.cc
       const int predictive_penalty = 500 * log(50 * predicted_key_len);
       cost += predictive_penalty;
-      MOZC_WORD_LOG(result, absl::StrCat("Predictive: ", cost));
+      MOZC_WORD_LOG(result, "Predictive: ", cost);
     }
     // Penalty for prefix results.
     if (result.candidate_attributes &
-        Segment::Candidate::PARTIALLY_KEY_CONSUMED) {
+        converter::Attribute::PARTIALLY_KEY_CONSUMED) {
       const int prefix_penalty =
-          CalculatePrefixPenalty(request, input_key, result,
-                                 immutable_converter_, &prefix_penalty_cache);
+          CalculatePrefixPenalty(request, result, &prefix_penalty_cache);
       result.penalty += prefix_penalty;
       cost += prefix_penalty;
-      MOZC_WORD_LOG(result, absl::StrCat("Prefix: ", cost,
-                                         "; prefix penalty: ", prefix_penalty));
+      MOZC_WORD_LOG(result, "Prefix: ", cost,
+                    "; prefix penalty: ", prefix_penalty);
     }
 
     // Note that the cost is defined as -500 * log(prob).
     // Even after the ad hoc manipulations, cost must remain larger than 0.
     result.cost = std::max(1, cost);
-    MOZC_WORD_LOG(result, absl::StrCat("SetPredictionCost: ", result.cost));
+    MOZC_WORD_LOG(result, "SetPredictionCost: ", result.cost);
   }
-
-  MaybeFixRealtimeTopCost(input_key, *results);
-}
-
-// static
-size_t DictionaryPredictor::GetMissSpelledPosition(
-    const absl::string_view key, const absl::string_view value) {
-  const std::string hiragana_value = japanese::KatakanaToHiragana(value);
-  // value is mixed type. return true if key == request_key.
-  if (Util::GetScriptType(hiragana_value) != Util::HIRAGANA) {
-    return Util::CharsLen(key);
-  }
-
-  // Find the first position of character where miss spell occurs.
-  int position = 0;
-  ConstChar32Iterator key_iter(key);
-  for (ConstChar32Iterator hiragana_iter(hiragana_value);
-       !hiragana_iter.Done() && !key_iter.Done();
-       hiragana_iter.Next(), key_iter.Next(), ++position) {
-    if (hiragana_iter.Get() != key_iter.Get()) {
-      return position;
-    }
-  }
-
-  // not find. return the length of key.
-  while (!key_iter.Done()) {
-    ++position;
-    key_iter.Next();
-  }
-
-  return position;
 }
 
 // static
 void DictionaryPredictor::RemoveMissSpelledCandidates(
-    size_t request_key_len, std::vector<Result> *results) {
-  DCHECK(results);
+    const ConversionRequest& request, absl::Span<Result> results) {
+  const size_t request_key_len = Util::CharsLen(request.key());
 
-  if (results->size() <= 1) {
+  if (results.size() <= 1) {
     return;
   }
 
   int spelling_correction_size = 5;
-  for (size_t i = 0; i < results->size(); ++i) {
-    const Result &result = (*results)[i];
+  for (size_t i = 0; i < results.size(); ++i) {
+    const Result& result = results[i];
     if (!(result.candidate_attributes &
-          Segment::Candidate::SPELLING_CORRECTION)) {
+          converter::Attribute::SPELLING_CORRECTION)) {
       continue;
     }
 
@@ -1115,13 +632,13 @@ void DictionaryPredictor::RemoveMissSpelledCandidates(
     }
 
     std::vector<size_t> same_key_index, same_value_index;
-    for (size_t j = 0; j < results->size(); ++j) {
+    for (size_t j = 0; j < results.size(); ++j) {
       if (i == j) {
         continue;
       }
-      const Result &target_result = (*results)[j];
+      const Result& target_result = results[j];
       if (target_result.candidate_attributes &
-          Segment::Candidate::SPELLING_CORRECTION) {
+          converter::Attribute::SPELLING_CORRECTION) {
         continue;
       }
       if (target_result.key == result.key) {
@@ -1134,23 +651,24 @@ void DictionaryPredictor::RemoveMissSpelledCandidates(
 
     // delete same_key_index and same_value_index
     if (!same_key_index.empty() && !same_value_index.empty()) {
-      (*results)[i].removed = true;
-      MOZC_WORD_LOG((*results)[i], "Removed. same_(key|value)_index.");
+      results[i].removed = true;
+      MOZC_WORD_LOG(results[i], "Removed. same_(key|value)_index.");
       for (const size_t k : same_key_index) {
-        (*results)[k].removed = true;
-        MOZC_WORD_LOG((*results)[k], "Removed. same_(key|value)_index.");
+        results[k].removed = true;
+        MOZC_WORD_LOG(results[k], "Removed. same_(key|value)_index.");
       }
     } else if (same_key_index.empty() && !same_value_index.empty()) {
-      (*results)[i].removed = true;
-      MOZC_WORD_LOG((*results)[i], "Removed. same_value_index.");
+      results[i].removed = true;
+      MOZC_WORD_LOG(results[i], "Removed. same_value_index.");
     } else if (!same_key_index.empty() && same_value_index.empty()) {
       for (const size_t k : same_key_index) {
-        (*results)[k].removed = true;
-        MOZC_WORD_LOG((*results)[k], "Removed. same_key_index.");
+        results[k].removed = true;
+        MOZC_WORD_LOG(results[k], "Removed. same_key_index.");
       }
-      if (request_key_len <= GetMissSpelledPosition(result.key, result.value)) {
-        (*results)[i].removed = true;
-        MOZC_WORD_LOG((*results)[i], "Removed. Invalid MissSpelledPosition.");
+      if (request_key_len <=
+          filter::GetMissSpelledPosition(result.key, result.value)) {
+        results[i].removed = true;
+        MOZC_WORD_LOG(results[i], "Removed. Invalid MissSpelledPosition.");
       }
     }
   }
@@ -1179,52 +697,57 @@ bool DictionaryPredictor::IsAggressiveSuggestion(size_t query_len,
 }
 
 int DictionaryPredictor::CalculatePrefixPenalty(
-    const ConversionRequest &request, const absl::string_view input_key,
-    const Result &result,
-    const ImmutableConverterInterface *immutable_converter,
-    absl::flat_hash_map<PrefixPenaltyKey, int> *cache) const {
-  if (input_key == result.key) {
+    const ConversionRequest& request, const Result& result,
+    absl::flat_hash_map<PrefixPenaltyKey, int>* cache) const {
+  if (request.key() == result.key) {
     LOG(WARNING) << "Invalid prefix key: " << result.key;
     return 0;
   }
-  const std::string &candidate_key = result.key;
+
   const uint16_t result_rid = result.rid;
-  const size_t key_len = Util::CharsLen(candidate_key);
+  const size_t key_len = Util::CharsLen(result.key);
   const PrefixPenaltyKey cache_key = std::make_pair(result_rid, key_len);
   if (const auto it = cache->find(cache_key); it != cache->end()) {
     return it->second;
   }
 
-  // Use the conversion result's cost for the remaining input key
+  // Use the conversion result's cost for the remaining request.key
   // as the penalty of the prefix candidate.
   // For example, if the input key is "きょうの" and the target prefix candidate
   // is "木:き", the penalty will be the cost of the conversion result for
   // "ょうの".
   int penalty = 0;
-  Segments tmp_segments;
-  tmp_segments.add_segment()->set_key(Util::Utf8SubString(input_key, key_len));
+
+  absl::string_view remain_key = Util::Utf8SubString(request.key(), key_len);
 
   ConversionRequest::Options options = request.options();
   options.max_conversion_candidates_size = 1;
   // Explicitly request conversion result for the entire key.
   options.create_partial_candidates = false;
   options.kana_modifier_insensitive_conversion = false;
+  // for efficiency, disable converter.
+  options.use_actual_converter_for_realtime_conversion = false;
+
+  // Do not use the current segments but use empty segments as
+  // we want to calculate the suffix penalty only.
   const ConversionRequest req = ConversionRequestBuilder()
-                                    .SetConversionRequest(request)
+                                    .SetConversionRequestView(request)
                                     .SetOptions(std::move(options))
+                                    .SetEmptyHistoryResult()
+                                    .SetKey(remain_key)
                                     .Build();
 
-  if (immutable_converter->ConvertForRequest(req, &tmp_segments) &&
-      tmp_segments.segment(0).candidates_size() > 0) {
-    const Segment::Candidate &top_candidate =
-        tmp_segments.segment(0).candidate(0);
-    penalty = (connector_.GetTransitionCost(result_rid, top_candidate.lid) +
-               top_candidate.cost);
+  if (const std::vector<Result> results = decoder_->Decode(req);
+      !results.empty()) {
+    const Result& top_result = results.front();
+    penalty = connector_.GetTransitionCost(result_rid, top_result.lid) +
+              top_result.cost;
   }
-  // ConvertForRequest() can return placeholder candidate with cost 0 when it
+
+  // Convert() can return placeholder candidate with cost 0 when it
   // failed to generate candidates.
   if (penalty <= 0) {
-    penalty = kInfinity;
+    penalty = Result::kInvalidCost;
   }
   constexpr int kPrefixCandidateCostOffset = 1151;  // 500 * log(10)
   // TODO(toshiyuki): Optimize the cost offset.
@@ -1234,72 +757,66 @@ int DictionaryPredictor::CalculatePrefixPenalty(
 }
 
 void DictionaryPredictor::MaybeRescoreResults(
-    const ConversionRequest &request, const Segments &segments,
-    absl::Span<Result> results) const {
+    const ConversionRequest& request, absl::Span<Result> results) const {
   if (request_util::IsHandwriting(request)) {
     // We want to fix the first candidate for handwriting request.
     return;
   }
 
   if (IsDebug(request)) {
-    for (Result &r : results) r.cost_before_rescoring = r.cost;
+    for (Result& r : results) r.cost_before_rescoring = r.cost;
   }
 
-  if (const engine::SupplementalModelInterface *const supplemental_model =
-          modules_.GetSupplementalModel();
-      supplemental_model != nullptr) {
-    supplemental_model->RescoreResults(request, segments, results);
-  }
+  modules_.GetSupplementalModel().RescoreResults(request, results);
 }
 
-void DictionaryPredictor::AddRescoringDebugDescription(Segments *segments) {
-  if (segments->conversion_segments_size() == 0) {
-    return;
-  }
-  Segment *seg = segments->mutable_conversion_segment(0);
-  if (seg->candidates_size() == 0) {
-    return;
-  }
+// static
+void DictionaryPredictor::AddRescoringDebugDescription(
+    absl::Span<Result> results) {
   // Calculate the ranking by the original costs. Note: this can be slightly
   // different from the actual ranking because, when the candidates were
   // generated, `filter.ShouldRemove()` was applied to the results ordered by
   // the rescored costs. To get the true original ranking, we need to apply
   // `filter.ShouldRemove()` to the results ordered by the original cost.
   // This is just for debugging, so such difference won't matter.
-  std::vector<const Segment::Candidate *> cands;
-  cands.reserve(seg->candidates_size());
-  for (int i = 0; i < seg->candidates_size(); ++i) {
-    cands.push_back(&seg->candidate(i));
+  std::vector<const Result*> cands;
+  cands.reserve(results.size());
+  int diff = 0;
+  for (const auto& result : results) {
+    diff += std::abs(result.cost - result.cost_before_rescoring);
+    cands.emplace_back(&result);
   }
-  std::sort(cands.begin(), cands.end(),
-            [](const Segment::Candidate *l, const Segment::Candidate *r) {
-              return l->cost_before_rescoring < r->cost_before_rescoring;
-            });
-  absl::flat_hash_map<const Segment::Candidate *, size_t> orig_rank;
-  for (size_t i = 0; i < cands.size(); ++i) orig_rank[cands[i]] = i + 1;
-
+  // No rescoring happened.
+  if (diff == 0) {
+    return;
+  }
+  std::sort(cands.begin(), cands.end(), [](const auto* lhs, const auto* rhs) {
+    return lhs->cost_before_rescoring < rhs->cost_before_rescoring;
+  });
+  absl::flat_hash_map<const Result*, size_t> orig_rank;
+  for (size_t i = 0; i < cands.size(); ++i) {
+    orig_rank[cands[i]] = i + 1;
+  }
   // Populate the debug description.
-  for (size_t i = 0; i < seg->candidates_size(); ++i) {
-    Segment::Candidate *c = seg->mutable_candidate(i);
+  for (size_t i = 0; i < results.size(); ++i) {
     const size_t rank = i + 1;
-    AppendDescription(*c, orig_rank[c], "→", rank);
+    AppendDescription(results[i], orig_rank[&results[i]], "→", rank);
   }
 }
 
 std::shared_ptr<Result> DictionaryPredictor::MaybeGetPreviousTopResult(
-    const Result &current_top_result, const ConversionRequest &request,
-    const Segments &segments) const {
+    const Result& current_top_result, const ConversionRequest& request) const {
   const int32_t max_diff = request.request()
                                .decoder_experiment_params()
                                .candidate_consistency_cost_max_diff();
-  if (max_diff == 0 || segments.conversion_segments_size() <= 0) {
+  if (max_diff == 0) {
     return nullptr;
   }
 
-  auto prev_top_result = std::atomic_load(&prev_top_result_);
+  std::shared_ptr<Result> prev_top_result = prev_top_result_.load();
 
   // Updates the key length.
-  const int cur_top_key_length = segments.conversion_segment(0).key().size();
+  const int cur_top_key_length = request.key().size();
   const int prev_top_key_length = prev_top_key_length_.exchange(
       cur_top_key_length);  // returns the old value.
 
@@ -1313,20 +830,16 @@ std::shared_ptr<Result> DictionaryPredictor::MaybeGetPreviousTopResult(
       std::abs(current_top_result.cost - prev_top_result->cost) < max_diff &&
       current_top_result.key.size() < prev_top_result->key.size() &&
       !(current_top_result.types & PREFIX) &&
-      absl::StartsWith(prev_top_result->key, current_top_result.key)) {
+      prev_top_result->key.starts_with(current_top_result.key)) {
     // Do not need to remember the previous key as `prev_top_result` is still
     // top result.
     return prev_top_result;
   }
 
   // Remembers the top result.
-  std::atomic_store(&prev_top_result_,
-                    std::make_shared<Result>(current_top_result));
+  prev_top_result_.store(std::make_shared<Result>(current_top_result));
 
   return nullptr;
 }
 
 }  // namespace mozc::prediction
-
-#undef MOZC_WORD_LOG_MESSAGE
-#undef MOZC_WORD_LOG

@@ -153,10 +153,9 @@ bool CanOpenLink(absl::string_view bundle_id) {
 bool CanSelectedRange(absl::string_view bundle_id) {
   // Do not call selectedRange: method for the following
   // applications because it could lead to application crash.
-  const bool is_supported =
-      bundle_id != "com.microsoft.Excel" &&
-      bundle_id != "com.microsoft.Powerpoint" &&
-      bundle_id != "com.microsoft.Word";
+  const bool is_supported = bundle_id != "com.microsoft.Excel" &&
+                            bundle_id != "com.microsoft.Powerpoint" &&
+                            bundle_id != "com.microsoft.Word";
   return is_supported;
 }
 
@@ -204,7 +203,14 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 // https://developer.apple.com/documentation/inputmethodkit/imkinputcontroller?language=objc
 
 - (id)initWithServer:(IMKServer *)server delegate:(id)delegate client:(id)inputClient {
-  self = [super initWithServer:server delegate:delegate client:inputClient];
+  // If server is nil, we are in the unit test environment.
+  if (server == nil) {
+    self = [super init];
+    imkClientForTest_ = inputClient;
+  } else {
+    self = [super initWithServer:server delegate:delegate client:inputClient];
+    imkClientForTest_ = nil;
+  }
   if (!self) {
     return self;
   }
@@ -218,7 +224,6 @@ bool CanSurroundingText(absl::string_view bundle_id) {
   yenSignCharacter_ = mozc::config::Config::YEN_SIGN;
   mozcRenderer_ = std::make_unique<mozc::renderer::RendererClient>();
   mozcClient_ = mozc::client::ClientFactory::NewClient();
-  imkClientForTest_ = nil;
   lastKeyDownTime_ = 0;
   lastKeyCode_ = 0;
 
@@ -235,8 +240,7 @@ bool CanSurroundingText(absl::string_view bundle_id) {
     }
     [self setupClientBundle:inputClient];
     [self setupCapability];
-    RendererCommand::ApplicationInfo *applicationInfo =
-        rendererCommand_.mutable_application_info();
+    RendererCommand::ApplicationInfo *applicationInfo = rendererCommand_.mutable_application_info();
     applicationInfo->set_process_id(::getpid());
     // thread_id and receiver_handle are not used currently in Mac but
     // set some values to prevent warning.
@@ -275,6 +279,9 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 // https://developer.apple.com/documentation/inputmethodkit/imkstatesetting?language=objc
 
 - (void)activateServer:(id)sender {
+  if (imkClientForTest_) {
+    return;
+  }
   [super activateServer:sender];
   [self setupClientBundle:sender];
   if (rendererCommand_.visible() && mozcRenderer_) {
@@ -297,6 +304,10 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 }
 
 - (void)deactivateServer:(id)sender {
+  if (imkClientForTest_) {
+    return;
+  }
+
   RendererCommand clearCommand;
   clearCommand.set_type(RendererCommand::UPDATE);
   clearCommand.set_visible(false);
@@ -317,6 +328,10 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 
 // This method is called when a user changes the input mode.
 - (void)setValue:(id)value forTag:(long)tag client:(id)sender {
+  if (imkClientForTest_) {
+    return;
+  }
+
   CompositionMode new_mode = [value isKindOfClass:[NSString class]]
                                  ? GetCompositionMode([value UTF8String])
                                  : mozc::commands::DIRECT;
@@ -702,6 +717,10 @@ bool CanSurroundingText(absl::string_view bundle_id) {
 // |selecrionRange| method is defined at IMKInputController class and
 // means the position of cursor actually.
 - (NSRange)selectionRange {
+  if (imkClientForTest_) {
+    return NSMakeRange(cursorPosition_, 0);
+  }
+
   return (cursorPosition_ == -1)
              ? [super selectionRange]  // default behavior defined at super class
              : NSMakeRange(cursorPosition_, 0);

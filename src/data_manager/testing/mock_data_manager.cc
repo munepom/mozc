@@ -32,8 +32,8 @@
 #include <cstddef>
 
 #include "absl/log/check.h"
-#include "absl/strings/string_view.h"
 #include "base/embedded_file.h"
+#include "data_manager/data_manager.h"
 
 namespace mozc {
 namespace testing {
@@ -51,8 +51,8 @@ constexpr size_t kMagicNumberLength = MOZC_DATASET_MAGIC_NUMBER_LENGTH;
 }  // namespace
 
 MockDataManager::MockDataManager() {
-  CHECK_EQ(Status::OK, InitFromArray(LoadEmbeddedFile(kMockMozcDataSet),
-                                     kMagicNumberLength))
+  CHECK_OK(DataManager::InitFromArray(LoadEmbeddedFile(kMockMozcDataSet),
+                                      kMagicNumberLength))
       << "Embedded mock_mozc_data.h is broken";
 }
 

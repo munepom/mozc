@@ -49,10 +49,9 @@
 #include "protocol/candidate_window.pb.h"
 #include "renderer/renderer_interface.h"
 #include "testing/gmock.h"
-#include "testing/googletest.h"
 #include "testing/gunit.h"
 
-@interface MockIMKServer : IMKServer <ServerCallback> {
+@interface MockIMKServer : NSObject <ServerCallback> {
   // The controller which accepts user's clicks
   __weak id<ControllerCallback> expectedController_;
   int setCurrentController_count_;
@@ -261,10 +260,10 @@ class MozcImkInputControllerTest : public testing::Test {
   }
 
   void SetUpController() {
-    controller_ = [[MozcImkInputController alloc] initWithServer:mock_server_
-                                                               delegate:nil
-                                                                 client:mock_client_];
-    controller_.imkClientForTest = mock_client_;
+    // Initialize MozcImkInputController for testing by setting initWithServer to nil.
+    controller_ = [[MozcImkInputController alloc] initWithServer:nil
+                                                        delegate:nil
+                                                          client:mock_client_];
     mock_server_.expectedController = controller_;
     auto mock_mozc_client = std::make_unique<mozc::client::ClientMock>();
     mock_mozc_client_ = mock_mozc_client.get();
@@ -368,8 +367,7 @@ NSTimeInterval GetDoubleTapInterval() {
   return kDoubleTapInterval;
 }
 
-BOOL SendKeyEvent(unsigned short keyCode, MozcImkInputController *controller,
-                  MockClient *client) {
+BOOL SendKeyEvent(unsigned short keyCode, MozcImkInputController *controller, MockClient *client) {
   // tap Kana-key
   NSEvent *kanaKeyEvent = [NSEvent keyEventWithType:NSEventTypeKeyDown
                                            location:NSZeroPoint

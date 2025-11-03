@@ -27,8 +27,10 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-# Build instructions with this Dockerfile.
-# https://github.com/google/mozc/blob/master/docs/build_mozc_in_docker.md
+# This file is deprecated.
+# See the following pages for the latest build instructions.
+# - https://github.com/google/mozc/blob/master/docs/build_mozc_for_linux.md
+# - https://github.com/google/mozc/blob/master/docs/build_mozc_for_android.md
 
 FROM ubuntu:24.04
 
@@ -41,8 +43,6 @@ RUN apt-get update && apt-get install -y \
     libibus-1.0-dev libglib2.0-dev qt6-base-dev libgl-dev \
     ## Packages for misc tools
     nano \
-    ## Setting up Android SDK requires OpenJDK.
-    openjdk-17-jdk \
   && rm -rf /var/lib/apt/lists/*
 
 # Working environemnt
@@ -56,16 +56,8 @@ WORKDIR /home/mozc_builder/work
 
 ## Set up bazelisk as bazel
 RUN curl -LO https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64 \
-  && mv bazelisk-linux-amd64 /home/mozc_builder/bin/bazel \
-  && chmod u+x /home/mozc_builder/bin/bazel
-ENV USE_BAZEL_VERSION 8.0.0
-
-## Set up Android SDK and NDK
-ENV ANDROID_HOME /home/mozc_builder/Android/Sdk
-RUN mkdir -p ${ANDROID_HOME}
-RUN curl -LO https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip && unzip commandlinetools-linux-10406996_latest.zip -d ${ANDROID_HOME} && rm commandlinetools-linux-10406996_latest.zip
-RUN yes | ${ANDROID_HOME}/cmdline-tools/bin/sdkmanager --sdk_root=${ANDROID_HOME} "cmdline-tools;latest" "platforms;android-33" "build-tools;33.0.2" "platform-tools" "ndk;27.1.12297006"
-ENV ANDROID_NDK_HOME ${ANDROID_HOME}/ndk/27.1.12297006
+  && mv bazelisk-linux-amd64 /home/mozc_builder/bin/bazelisk \
+  && chmod u+x /home/mozc_builder/bin/bazelisk
 
 # check out Mozc source with submodules
 RUN mkdir /home/mozc_builder/work/mozc

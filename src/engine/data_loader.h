@@ -38,6 +38,7 @@
 
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "base/thread.h"
@@ -55,8 +56,8 @@ namespace mozc {
 class DataLoader {
  public:
   DataLoader() = default;
-  DataLoader(const DataLoader &) = delete;
-  DataLoader &operator=(const DataLoader &) = delete;
+  DataLoader(const DataLoader&) = delete;
+  DataLoader& operator=(const DataLoader&) = delete;
   virtual ~DataLoader();
 
   struct Response {
@@ -74,7 +75,7 @@ class DataLoader {
   // modules from the loader to caller. Note that `callback` is also executed in
   // a different thread asynchronously. `callback` is not called when
   // the data-loading failed.
-  bool StartNewDataBuildTask(const EngineReloadRequest &request,
+  bool StartNewDataBuildTask(const EngineReloadRequest& request,
                              ReloadedCallback callback);
 
   // Waits for loading thread.
@@ -95,32 +96,32 @@ class DataLoader {
     EngineReloadRequest request;
 
     template <typename Sink>
-    friend void AbslStringify(Sink &sink, const RequestData &p) {
-      sink.Append(absl::StrCat("id=", p.id, " priority=", p.request.priority(),
-                               " sequence_id=", p.sequence_id,
-                               " file_path=", p.request.file_path()));
+    friend void AbslStringify(Sink& sink, const RequestData& p) {
+      absl::Format(&sink, "id=%d priority = %d sequence_id=%d file_path=%s",
+                   p.id, p.request.priority(), p.sequence_id,
+                   p.request.file_path());
     }
   };
 
   // Builds new response from `request_data`.
-  std::unique_ptr<Response> BuildResponse(const RequestData &request_data);
+  std::unique_ptr<Response> BuildResponse(const RequestData& request_data);
 
   // Accepts engine reload request and immediately returns whether
   // the `request` is accepted or not.
-  bool RegisterRequest(const EngineReloadRequest &request);
+  bool RegisterRequest(const EngineReloadRequest& request);
 
   // Returns the RequestData to be processed. Return std::nullopt when
   // no request should be processed.
   std::optional<RequestData> GetPendingRequestData() const;
 
   // Returns the request id associated with the request.
-  uint64_t GetRequestId(const EngineReloadRequest &request) const;
+  uint64_t GetRequestId(const EngineReloadRequest& request) const;
 
   // Unregister the request.
-  void ReportLoadFailure(const RequestData &request_data);
+  void ReportLoadFailure(const RequestData& request_data);
 
   // Register the request.
-  void ReportLoadSuccess(const RequestData &request_data);
+  void ReportLoadSuccess(const RequestData& request_data);
 
   void StartReloadLoop(DataLoader::ReloadedCallback callback);
 

@@ -1,3 +1,6 @@
+## Startup options
+startup  --windows_enable_symlinks  # ignored on non-Windows platforms
+
 ## Target platforms
 common:linux      --config=linux_env --define TARGET=oss_linux
 common:oss_linux  --config=linux_env --define TARGET=oss_linux
@@ -22,8 +25,14 @@ build:dev_channel --define CHANNEL=dev
 
 ## Release build
 build:release_build --compilation_mode=opt
-# Temporarily disable this definition to work around the build failure on Linux.
-# build:release_build --copt=-DABSL_MIN_LOG_LEVEL=100
+build:release_build --copt=-DABSL_MIN_LOG_LEVEL=100
+
+## Clang-cl toolchain for Windows
+build:windows_env --extra_toolchains=@local_config_cc//:cc-toolchain-arm64_windows-clang-cl
+build:windows_env --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows-clang-cl
+build:windows_env --extra_toolchains=@local_config_cc//:cc-toolchain-x64_x86_windows-clang-cl
+build:windows_env --host_platform=//:host-windows-clang-cl
+build:windows_env --copt "/D_WIN32_WINNT=0x0A00" --host_copt "/D_WIN32_WINNT=0x0A00"
 
 ## Compiler options
 common:linux_env   --config=compiler_gcc_like
@@ -53,14 +62,9 @@ build:macos_env --build_tag_filters=-nomac --objccopt "-fsigned-char"
 test:macos_env   --test_tag_filters=-nomac
 
 ## Windows specific options
+common:windows_env --enable_runfiles
 build:windows_env --build_tag_filters=-nowin
 test:windows_env   --test_tag_filters=-nowin
-
-# A temporary workaround to make "mozc_win_build_rule" work.
-# Note that "incompatible_enable_cc_toolchain_resolution" is now enabled by
-# default. See https://github.com/bazelbuild/bazel/issues/7260
-# TODO: Re-enable "incompatible_enable_cc_toolchain_resolution"
-build:windows_env --noincompatible_enable_cc_toolchain_resolution
 
 # Android specific options
 build:android_env --copt "-DOS_ANDROID"

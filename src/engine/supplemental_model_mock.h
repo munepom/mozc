@@ -31,13 +31,12 @@
 #define MOZC_ENGINE_SUPPLEMENTAL_MODEL_MOCK_H_
 
 #include <optional>
+#include <utility>
 #include <vector>
 
-#include "absl/base/nullability.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "composer/query.h"
-#include "converter/segments.h"
 #include "engine/supplemental_model_interface.h"
 #include "prediction/result.h"
 #include "protocol/commands.pb.h"
@@ -49,32 +48,32 @@ namespace mozc::engine {
 
 class MockSupplementalModel : public SupplementalModelInterface {
  public:
-  MOCK_METHOD(bool, LoadAsync, (const EngineReloadRequest &request),
+  MOCK_METHOD(bool, LoadAsync, (const EngineReloadRequest& request),
               (override));
-  MOCK_METHOD(EngineReloadResponse, Load, (const EngineReloadRequest &request),
+  MOCK_METHOD(EngineReloadResponse, Load, (const EngineReloadRequest& request),
               (override));
-  MOCK_METHOD(std::optional<commands::CheckSpellingResponse>, CheckSpelling,
-              (const commands::CheckSpellingRequest &request),
-              (const, override));
   MOCK_METHOD(std::optional<std::vector<composer::TypeCorrectedQuery>>,
-              CorrectComposition,
-              (const ConversionRequest &request, const Segments &segments),
+              CorrectComposition, (const ConversionRequest& request),
               (const, override));
   MOCK_METHOD(void, PopulateTypeCorrectedQuery,
-              (const ConversionRequest &request, const Segments &segments,
+              (const ConversionRequest& request,
                absl::Span<prediction::Result> results),
               (const, override));
   MOCK_METHOD(void, PostCorrect,
-              (const ConversionRequest &, const Segments &egments,
-               std::vector<prediction::Result> &results),
+              (const ConversionRequest& request,
+               std::vector<prediction::Result>& results),
               (const, override));
   MOCK_METHOD(void, RescoreResults,
-              (const ConversionRequest &request, const Segments &segments,
+              (const ConversionRequest& request,
                absl::Span<prediction::Result> results),
               (const, override));
   MOCK_METHOD(bool, Predict,
-              (const ConversionRequest &request, const Segments &segments,
-               std::vector<prediction::Result> &results),
+              (const ConversionRequest& request,
+               std::vector<prediction::Result>& results),
+              (const, override));
+  MOCK_METHOD((std::vector<std::pair<absl::string_view, absl::string_view>>),
+              GetReadingAlignment,
+              (absl::string_view surface, absl::string_view reading),
               (const, override));
 };
 

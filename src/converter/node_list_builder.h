@@ -32,9 +32,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "absl/log/check.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "converter/node.h"
 #include "converter/node_allocator.h"
 #include "dictionary/dictionary_interface.h"
@@ -43,34 +45,18 @@
 
 namespace mozc {
 
-// Spatial cost penalty added to the token expanded via
-// the legacy dictionary-based variant handler. We currently add large cost so
-// the variant expansion happen only when the counter examples don't exist.
-inline int32_t GetLegacySpatialCostPenalty() {
-  static constexpr int32_t kLegacySpatialCostPenalty = 20000;
-  return kLegacySpatialCostPenalty;
-}
-
 // Spatial cost penalty per modification. We are going to
 // use the moderate penalty to increase the coverage, and re-calculate
 // the actual penalty with new typing correction module.
 // Per-modification penalty allows to recompute the added penalty
 // from the actual output of key by counting different characters.
 inline int32_t GetPerExpansionSpatialCostPenalty() {
-  static constexpr int32_t kPerExpansionSpatialCostPenalty = 2000;
+  static constexpr int32_t kPerExpansionSpatialCostPenalty = 2500;
   return kPerExpansionSpatialCostPenalty;
 }
 
-// Setting/Getting experimental flags to legacy typing correction handling.
-void SetTypingCorrectionLegacyExpansionMode(int32_t mode);
-
-int32_t GetTypingCorrectionLegacyExpansionMode();
-
 inline int32_t GetSpatialCostPenalty(int num_expanded) {
-  if (num_expanded == 0) return 0;
-  return GetTypingCorrectionLegacyExpansionMode() >= 3
-             ? num_expanded * GetPerExpansionSpatialCostPenalty()
-             : GetLegacySpatialCostPenalty();
+  return num_expanded * GetPerExpansionSpatialCostPenalty();
 }
 
 // Provides basic functionality for building a list of nodes.
@@ -78,13 +64,14 @@ inline int32_t GetSpatialCostPenalty(int num_expanded) {
 // dictionary lookup.
 class BaseNodeListBuilder : public dictionary::DictionaryInterface::Callback {
  public:
-  BaseNodeListBuilder(mozc::NodeAllocator *allocator, int limit)
-      : allocator_(allocator), limit_(limit), penalty_(0), result_(nullptr) {
+  BaseNodeListBuilder(mozc::NodeAllocator* allocator, int limit)
+      : allocator_(allocator), limit_(limit), penalty_(0) {
+    result_.reserve(64);
     DCHECK(allocator_) << "Allocator must not be nullptr";
   }
 
-  BaseNodeListBuilder(const BaseNodeListBuilder &) = delete;
-  BaseNodeListBuilder &operator=(const BaseNodeListBuilder &) = delete;
+  BaseNodeListBuilder(const BaseNodeListBuilder&) = delete;
+  BaseNodeListBuilder& operator=(const BaseNodeListBuilder&) = delete;
 
   // Determines a penalty for tokens of this (key, actual_key) pair.
   ResultType OnActualKey(absl::string_view key, absl::string_view actual_key,
@@ -95,51 +82,55 @@ class BaseNodeListBuilder : public dictionary::DictionaryInterface::Callback {
 
   // Creates a new node and prepends it to the current list.
   ResultType OnToken(absl::string_view key, absl::string_view actual_key,
-                     const dictionary::Token &token) override {
-    Node *new_node = NewNodeFromToken(token);
-    PrependNode(new_node);
-    return (limit_ <= 0) ? TRAVERSE_DONE : TRAVERSE_CONTINUE;
+                     const dictionary::Token& token) override {
+    Node* new_node = NewNodeFromToken(token);
+    DCHECK(new_node);
+    AppendToResult(new_node);
+    return (result_.size() > limit_) ? TRAVERSE_DONE : TRAVERSE_CONTINUE;
   }
 
   int limit() const { return limit_; }
   int penalty() const { return penalty_; }
-  Node *result() const { return result_; }
-  NodeAllocator *allocator() { return allocator_; }
+  NodeAllocator* allocator() { return allocator_; }
 
-  Node *NewNodeFromToken(const dictionary::Token &token) {
-    Node *new_node = allocator_->NewNode();
+  absl::Span<Node* const> result_view() const {
+    return absl::MakeSpan(result_);
+  }
+  std::vector<Node*> result() { return result_; }
+
+  Node* NewNodeFromToken(const dictionary::Token& token) {
+    Node* new_node = allocator_->NewNode();
     new_node->InitFromToken(token);
     new_node->wcost += penalty_;
     if (penalty_ > 0) new_node->attributes |= Node::KEY_EXPANDED;
     return new_node;
   }
 
-  void PrependNode(Node *node) {
-    node->bnext = result_;
-    result_ = node;
-    --limit_;
+  void AppendToResult(Node* node) {
+    DCHECK(node);
+    result_.push_back(node);
   }
 
- protected:
-  NodeAllocator *allocator_ = nullptr;
-  int limit_ = 0;
+ private:
+  NodeAllocator* allocator_ = nullptr;
+  const int limit_ = 0;
   int penalty_ = 0;
-  Node *result_ = nullptr;
+  std::vector<Node*> result_;
 };
 
 // Implements key filtering rule for LookupPrefix().
 // This class is also defined inline.
 class NodeListBuilderForLookupPrefix : public BaseNodeListBuilder {
  public:
-  NodeListBuilderForLookupPrefix(mozc::NodeAllocator *allocator, int limit,
+  NodeListBuilderForLookupPrefix(mozc::NodeAllocator* allocator, int limit,
                                  size_t min_key_length)
       : BaseNodeListBuilder(allocator, limit),
         min_key_length_(min_key_length) {}
 
-  NodeListBuilderForLookupPrefix(const NodeListBuilderForLookupPrefix &) =
+  NodeListBuilderForLookupPrefix(const NodeListBuilderForLookupPrefix&) =
       delete;
-  NodeListBuilderForLookupPrefix &operator=(
-      const NodeListBuilderForLookupPrefix &) = delete;
+  NodeListBuilderForLookupPrefix& operator=(
+      const NodeListBuilderForLookupPrefix&) = delete;
 
   ResultType OnKey(absl::string_view key) override {
     return key.size() < min_key_length_ ? TRAVERSE_NEXT_KEY : TRAVERSE_CONTINUE;

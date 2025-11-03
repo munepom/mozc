@@ -49,43 +49,44 @@ namespace {
 // and what value should be returned.
 class TestRewriter : public RewriterInterface {
  public:
-  TestRewriter(std::string *buffer, const absl::string_view name,
+  TestRewriter(std::string* buffer, const absl::string_view name,
                bool return_value)
       : buffer_(buffer),
         name_(name),
         return_value_(return_value),
         capability_(RewriterInterface::CONVERSION) {}
 
-  TestRewriter(std::string *buffer, const absl::string_view name,
+  TestRewriter(std::string* buffer, const absl::string_view name,
                bool return_value, int capability)
       : buffer_(buffer),
         name_(name),
         return_value_(return_value),
         capability_(capability) {}
 
-  bool Rewrite(const ConversionRequest &request,
-               Segments *segments) const override {
+  bool Rewrite(const ConversionRequest& request,
+               Segments* segments) const override {
     buffer_->append(name_ + ".Rewrite();");
     return return_value_;
   }
 
   virtual void set_capability(int capability) { capability_ = capability; }
 
-  int capability(const ConversionRequest &request) const override {
+  int capability(const ConversionRequest& request) const override {
     return capability_;
   }
 
-  bool Focus(Segments *segments, size_t segment_index,
+  bool Focus(Segments* segments, size_t segment_index,
              int candidate_index) const override {
     buffer_->append(name_ + ".Focus();");
     return return_value_;
   }
 
-  void Finish(const ConversionRequest &request, Segments *segments) override {
+  void Finish(const ConversionRequest& request,
+              const Segments& segments) override {
     buffer_->append(name_ + ".Finish();");
   }
 
-  void Revert(Segments *segments) override {
+  void Revert(const Segments& segments) override {
     buffer_->append(name_ + ".Revert();");
   }
 
@@ -102,7 +103,7 @@ class TestRewriter : public RewriterInterface {
   void Clear() override { buffer_->append(name_ + ".Clear();"); }
 
  private:
-  std::string *buffer_;
+  std::string* buffer_;
   const std::string name_;
   const bool return_value_;
   int capability_;
@@ -148,7 +149,7 @@ TEST_F(MergerRewriterTest, RewriteSuggestion) {
       &call_result, "a", true, RewriterInterface::SUGGESTION));
 
   EXPECT_EQ(segments.conversion_segments_size(), 0);
-  Segment *segment = segments.push_back_segment();
+  Segment* segment = segments.push_back_segment();
   EXPECT_EQ(segments.conversion_segments_size(), 1);
 
   EXPECT_EQ(segment->candidates_size(), 0);
@@ -185,7 +186,7 @@ TEST_F(MergerRewriterTest, RewriteSuggestionWithMixedConversion) {
       &call_result, "a", true, RewriterInterface::SUGGESTION));
 
   EXPECT_EQ(segments.conversion_segments_size(), 0);
-  Segment *segment = segments.push_back_segment();
+  Segment* segment = segments.push_back_segment();
   EXPECT_EQ(segments.conversion_segments_size(), 1);
 
   EXPECT_EQ(segment->candidates_size(), 0);
@@ -288,11 +289,12 @@ TEST_F(MergerRewriterTest, Focus) {
 TEST_F(MergerRewriterTest, Finish) {
   std::string call_result;
   const ConversionRequest request;
+  const Segments segments;
   MergerRewriter merger;
   merger.AddRewriter(std::make_unique<TestRewriter>(&call_result, "a", false));
   merger.AddRewriter(std::make_unique<TestRewriter>(&call_result, "b", false));
   merger.AddRewriter(std::make_unique<TestRewriter>(&call_result, "c", false));
-  merger.Finish(request, nullptr);
+  merger.Finish(request, segments);
   EXPECT_EQ(call_result,
             "a.Finish();"
             "b.Finish();"
@@ -302,11 +304,12 @@ TEST_F(MergerRewriterTest, Finish) {
 TEST_F(MergerRewriterTest, Revert) {
   std::string call_result;
   const ConversionRequest request;
+  const Segments segments;
   MergerRewriter merger;
   merger.AddRewriter(std::make_unique<TestRewriter>(&call_result, "a", false));
   merger.AddRewriter(std::make_unique<TestRewriter>(&call_result, "b", false));
   merger.AddRewriter(std::make_unique<TestRewriter>(&call_result, "c", false));
-  merger.Revert(nullptr);
+  merger.Revert(segments);
   EXPECT_EQ(call_result,
             "a.Revert();"
             "b.Revert();"

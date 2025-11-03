@@ -32,7 +32,6 @@
 
 #include <memory>
 
-#include "absl/random/random.h"
 #include "absl/strings/string_view.h"
 #include "converter/segments.h"
 #include "data_manager/data_manager.h"
@@ -45,21 +44,20 @@ namespace mozc {
 class EmoticonRewriter : public RewriterInterface {
  public:
   static std::unique_ptr<EmoticonRewriter> CreateFromDataManager(
-      const DataManager &data_manager);
+      const DataManager& data_manager);
 
   EmoticonRewriter(absl::string_view token_array_data,
                    absl::string_view string_array_data);
 
-  int capability(const ConversionRequest &request) const override;
+  int capability(const ConversionRequest& request) const override;
 
-  bool Rewrite(const ConversionRequest &request,
-               Segments *segments) const override;
+  bool Rewrite(const ConversionRequest& request,
+               Segments* segments) const override;
 
  private:
-  bool RewriteCandidate(Segments *segments) const;
+  bool RewriteCandidate(Segments* segments) const;
 
   SerializedDictionary dic_;
-  mutable absl::BitGen bitgen_;
 };
 
 }  // namespace mozc

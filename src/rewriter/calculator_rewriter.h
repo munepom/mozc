@@ -35,6 +35,7 @@
 
 #include "absl/strings/string_view.h"
 #include "converter/segments.h"
+#include "rewriter/calculator/calculator.h"
 #include "rewriter/rewriter_interface.h"
 
 namespace mozc {
@@ -43,27 +44,28 @@ class CalculatorRewriterTest;
 class ConversionRequest;
 class ConversionRequest;
 class ConverterInterface;
-class Segments;
 
 class CalculatorRewriter : public RewriterInterface {
  public:
   friend class CalculatorRewriterTest;
 
-  int capability(const ConversionRequest &request) const override;
+  int capability(const ConversionRequest& request) const override;
 
   std::optional<ResizeSegmentsRequest> CheckResizeSegmentsRequest(
-      const ConversionRequest &request,
-      const Segments &segments) const override;
+      const ConversionRequest& request,
+      const Segments& segments) const override;
 
-  bool Rewrite(const ConversionRequest &request,
-               Segments *segments) const override;
+  bool Rewrite(const ConversionRequest& request,
+               Segments* segments) const override;
 
  private:
   // Inserts a candidate with the string into the |segment|.
   // Position of insertion is indicated by |insert_pos|. It returns false if
   // insertion is failed.
   bool InsertCandidate(absl::string_view value, size_t insert_pos,
-                       Segment *segment) const;
+                       Segment* segment) const;
+
+  const Calculator calculator_;
 };
 
 }  // namespace mozc

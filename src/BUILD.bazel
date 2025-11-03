@@ -31,6 +31,7 @@
 #   Declaration of package_group for visibility managing.
 
 load("@bazel_skylib//lib:selects.bzl", "selects")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
     "//:build_defs.bzl",
     "mozc_select",
@@ -56,10 +57,29 @@ config_setting(
     visibility = ["//visibility:private"],
 )
 
+# CHANNEL=dev is used to build Dev channel binaries.
+# Dev channel is a kind of beta release that can be used by external users.
+# The version number of Dev channel should end with 10x (e.g. 100 for Windows, 101 for macOS).
 config_setting(
     name = "dev_channel",
     values = {
         "define": "CHANNEL=dev",
+    },
+)
+
+# CODESIGN=release is used to build binaries that are signed for external product release.
+config_setting(
+    name = "codesign_release",
+    values = {
+        "define": "CODESIGN=release",
+    },
+)
+
+# CODESIGN=testing is used to build binaries that are signed for internal testing release.
+config_setting(
+    name = "codesign_testing",
+    values = {
+        "define": "CODESIGN=testing",
     },
 )
 
@@ -95,6 +115,40 @@ selects.config_setting_group(
         ":compiler_msvc_cl",
     ],
     visibility = ["//:__subpackages__"],
+)
+
+# Generic Windows platform with clang-cl that automatically matches host CPU.
+platform(
+    name = "host-windows-clang-cl",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@bazel_tools//tools/cpp:clang-cl",
+    ],
+    parents = ["@local_config_platform//:host"],
+)
+
+platform(
+    name = "windows-x86_32",
+    constraint_values = [
+        "@platforms//cpu:x86_32",
+        "@platforms//os:windows",
+    ],
+)
+
+platform(
+    name = "windows-x86_64",
+    constraint_values = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:windows",
+    ],
+)
+
+platform(
+    name = "windows-arm64",
+    constraint_values = [
+        "@platforms//cpu:arm64",
+        "@platforms//os:windows",
+    ],
 )
 
 # Special target so as to define special macros for each platforms.
@@ -180,7 +234,9 @@ bzl_library(
         "//bazel:run_build_tool_bzl",
         "//bazel:stubs.bzl",
         "//devtools/build_cleaner/skylark:build_defs_lib",
+        "@bazel_skylib//rules:select_file",
         "@build_bazel_rules_apple//apple:macos",
+        "@rules_cc//cc:core_rules",
     ],
 )
 

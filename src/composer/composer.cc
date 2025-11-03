@@ -33,34 +33,32 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
-#include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "absl/base/no_destructor.h"
 #include "absl/container/btree_set.h"
-#include "absl/hash/hash.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
-#include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
 #include "base/clock.h"
+#include "base/container/flat_multimap.h"
 #include "base/japanese_util.h"
 #include "base/strings/assign.h"
 #include "base/strings/unicode.h"
 #include "base/util.h"
 #include "base/vlog.h"
-#include "composer/internal/composition.h"
-#include "composer/internal/composition_input.h"
-#include "composer/internal/mode_switching_handler.h"
-#include "composer/internal/transliterators.h"
+#include "composer/composition.h"
+#include "composer/composition_input.h"
 #include "composer/key_event_util.h"
+#include "composer/mode_switching_handler.h"
 #include "composer/table.h"
+#include "composer/transliterators.h"
 #include "config/character_form_manager.h"
 #include "config/config_handler.h"
 #include "protocol/commands.pb.h"
@@ -210,38 +208,31 @@ transliteration::TransliterationType GetTransliterationTypeFromCompositionMode(
 // whereby we can suppress prediction from unmodified key when one modified a
 // character explicitly (e.g., we don't want to suggest words starting with
 // "さ" when one typed "ざ" with modified key).
-using ModifierRemovalMap =
-    std::unordered_multimap<absl::string_view, absl::string_view,
-                            absl::Hash<absl::string_view>>;
-
-const ModifierRemovalMap *GetModifierRemovalMap() {
-  static const ModifierRemovalMap *const removal_map = new ModifierRemovalMap{
-      {"ぁ", "あ"}, {"ぃ", "い"}, {"ぅ", "う"}, {"ぅ", "ゔ"}, {"ゔ", "う"},
-      {"ゔ", "ぅ"}, {"ぇ", "え"}, {"ぉ", "お"}, {"が", "か"}, {"ぎ", "き"},
-      {"ぐ", "く"}, {"げ", "け"}, {"ご", "こ"}, {"ざ", "さ"}, {"じ", "し"},
-      {"ず", "す"}, {"ぜ", "せ"}, {"ぞ", "そ"}, {"だ", "た"}, {"ぢ", "ち"},
-      {"づ", "つ"}, {"づ", "っ"}, {"っ", "つ"}, {"っ", "づ"}, {"で", "て"},
-      {"ど", "と"}, {"ば", "は"}, {"ば", "ぱ"}, {"ぱ", "は"}, {"ぱ", "ば"},
-      {"び", "ひ"}, {"び", "ぴ"}, {"ぴ", "ひ"}, {"ぴ", "び"}, {"ぶ", "ふ"},
-      {"ぶ", "ぷ"}, {"ぷ", "ふ"}, {"ぷ", "ぶ"}, {"べ", "へ"}, {"べ", "ぺ"},
-      {"ぺ", "へ"}, {"ぺ", "べ"}, {"ぼ", "ほ"}, {"ぼ", "ぽ"}, {"ぽ", "ほ"},
-      {"ぽ", "ぼ"}, {"ゃ", "や"}, {"ゅ", "ゆ"}, {"ょ", "よ"}, {"ゎ", "わ"},
-  };
-  return removal_map;
-}
+constexpr auto kModifierRemovalMap =
+    CreateFlatMultimap<absl::string_view, absl::string_view>({
+        {"ぁ", "あ"}, {"ぃ", "い"}, {"ぅ", "う"}, {"ぅ", "ゔ"}, {"ゔ", "う"},
+        {"ゔ", "ぅ"}, {"ぇ", "え"}, {"ぉ", "お"}, {"が", "か"}, {"ぎ", "き"},
+        {"ぐ", "く"}, {"げ", "け"}, {"ご", "こ"}, {"ざ", "さ"}, {"じ", "し"},
+        {"ず", "す"}, {"ぜ", "せ"}, {"ぞ", "そ"}, {"だ", "た"}, {"ぢ", "ち"},
+        {"づ", "つ"}, {"づ", "っ"}, {"っ", "つ"}, {"っ", "づ"}, {"で", "て"},
+        {"ど", "と"}, {"ば", "は"}, {"ば", "ぱ"}, {"ぱ", "は"}, {"ぱ", "ば"},
+        {"び", "ひ"}, {"び", "ぴ"}, {"ぴ", "ひ"}, {"ぴ", "び"}, {"ぶ", "ふ"},
+        {"ぶ", "ぷ"}, {"ぷ", "ふ"}, {"ぷ", "ぶ"}, {"べ", "へ"}, {"べ", "ぺ"},
+        {"ぺ", "へ"}, {"ぺ", "べ"}, {"ぼ", "ほ"}, {"ぼ", "ぽ"}, {"ぽ", "ほ"},
+        {"ぽ", "ぼ"}, {"ゃ", "や"}, {"ゅ", "ゆ"}, {"ょ", "よ"}, {"ゎ", "わ"},
+    });
 
 void RemoveExpandedCharsForModifier(absl::string_view asis,
                                     absl::string_view base,
-                                    absl::btree_set<std::string> *expanded) {
-  if (!absl::StartsWith(asis, base)) {
+                                    absl::btree_set<std::string>* expanded) {
+  if (!asis.starts_with(base)) {
     LOG(DFATAL) << "base is not a prefix of asis.";
     return;
   }
 
   const absl::string_view trailing(asis.substr(base.size()));
-  for (auto [iter, end] = GetModifierRemovalMap()->equal_range(trailing);
-       iter != end; ++iter) {
-    expanded->erase(std::string(iter->second));
+  for (auto [_, c] : kModifierRemovalMap.EqualSpan(trailing)) {
+    expanded->erase(c);
   }
 }
 
@@ -249,7 +240,7 @@ constexpr size_t kMaxPreeditLength = 256;
 
 namespace common {
 std::string GetStringForPreedit(
-    const Composition &composition,
+    const Composition& composition,
     const commands::Context::InputFieldType input_field_type) {
   std::string output = composition.GetString();
   Composer::TransformCharactersForNumbers(&output);
@@ -276,7 +267,7 @@ std::string GetStringForPreedit(
   return output;
 }
 
-std::string GetQueryForConversion(const Composition &composition) {
+std::string GetQueryForConversion(const Composition& composition) {
   std::string base_output = composition.GetStringWithTrimMode(FIX);
   Composer::TransformCharactersForNumbers(&base_output);
   return japanese_util::FullWidthAsciiToHalfWidthAscii(base_output);
@@ -291,8 +282,8 @@ std::string GetQueryForConversion(const Composition &composition) {
 // ("z", "") -> "z"      // ditto.
 // = Kana Input =
 // ("か", "") -> "か"  // a part of kana (it can be "が") should not be trimed.
-std::string *GetBaseQueryForPrediction(std::string *asis_query,
-                                       std::string *trimed_query) {
+std::string* GetBaseQueryForPrediction(std::string* asis_query,
+                                       std::string* trimed_query) {
   // If the sizes are equal, there is no matter.
   if (asis_query->size() == trimed_query->size()) {
     return asis_query;
@@ -339,7 +330,7 @@ std::string *GetBaseQueryForPrediction(std::string *asis_query,
 }
 
 std::string GetQueryForPrediction(
-    const Composition &composition,
+    const Composition& composition,
     const transliteration::TransliterationType input_mode) {
   std::string asis_query = composition.GetStringWithTrimMode(ASIS);
 
@@ -363,14 +354,14 @@ std::string GetQueryForPrediction(
   // ideal solution is to expand the ambguity and pass all of them to
   // the converter. (e.g. "かn" -> ["かな",..."かの", "かん", ...] /
   // "あか" -> ["あか", "あが"])
-  std::string *base_query =
+  std::string* base_query =
       GetBaseQueryForPrediction(&asis_query, &trimed_query);
   Composer::TransformCharactersForNumbers(base_query);
   return japanese_util::FullWidthAsciiToHalfWidthAscii(*base_query);
 }
 
 std::pair<std::string, absl::btree_set<std::string>> GetQueriesForPrediction(
-    const Composition &composition,
+    const Composition& composition,
     const transliteration::TransliterationType input_mode) {
   // In case of the Latin input modes, we don't perform expansion.
   switch (input_mode) {
@@ -384,7 +375,7 @@ std::pair<std::string, absl::btree_set<std::string>> GetQueriesForPrediction(
   }
 
   // auto = std::pair<std::string, absl::btree_set<std::string>>
-  auto[base_query, expanded] = composition.GetExpandedStrings();
+  auto [base_query, expanded] = composition.GetExpandedStrings();
 
   // The above `GetExpandedStrings` generates expansion for modifier key as
   // well, e.g., if the composition is "ざ", `expanded` contains "さ" too.
@@ -395,14 +386,14 @@ std::pair<std::string, absl::btree_set<std::string>> GetQueriesForPrediction(
   RemoveExpandedCharsForModifier(asis, base_query, &expanded);
 
   return std::make_pair(
-    japanese_util::FullWidthAsciiToHalfWidthAscii(base_query), expanded);
+      japanese_util::FullWidthAsciiToHalfWidthAscii(base_query), expanded);
 }
 
-std::string GetStringForTypeCorrection(const Composition &composition) {
+std::string GetStringForTypeCorrection(const Composition& composition) {
   return composition.GetStringWithTrimMode(ASIS);
 }
 
-std::string GetTransliteratedText(const Composition &composition,
+std::string GetTransliteratedText(const Composition& composition,
                                   Transliterators::Transliterator t12r,
                                   const size_t position, const size_t size) {
   const std::string full_base = composition.GetStringWithTransliterator(t12r);
@@ -416,18 +407,18 @@ std::string GetTransliteratedText(const Composition &composition,
   return std::string{Util::Utf8SubString(full_base, t13n_start, t13n_size)};
 }
 
-std::string GetRawSubString(const Composition &composition,
+std::string GetRawSubString(const Composition& composition,
                             const size_t position, const size_t size) {
   return GetTransliteratedText(composition, Transliterators::RAW_STRING,
                                position, size);
 }
 
-std::string GetRawString(const Composition &composition) {
+std::string GetRawString(const Composition& composition) {
   return GetRawSubString(composition, 0, composition.GetLength());
 }
 
 std::string GetSubTransliteration(
-    const Composition &composition,
+    const Composition& composition,
     const transliteration::TransliterationType type, const size_t position,
     const size_t size) {
   const Transliterators::Transliterator t12r = GetTransliterator(type);
@@ -437,8 +428,8 @@ std::string GetSubTransliteration(
 }
 
 void GetSubTransliterations(
-    const Composition &composition, const size_t position, const size_t size,
-    transliteration::Transliterations *transliterations) {
+    const Composition& composition, const size_t position, const size_t size,
+    transliteration::Transliterations* transliterations) {
   for (size_t i = 0; i < transliteration::NUM_T13N_TYPES; ++i) {
     const transliteration::TransliterationType t13n_type =
         transliteration::TransliterationTypeArray[i];
@@ -448,70 +439,33 @@ void GetSubTransliterations(
   }
 }
 
-void GetTransliterations(const Composition &composition,
-                         transliteration::Transliterations *t13ns) {
+void GetTransliterations(const Composition& composition,
+                         transliteration::Transliterations* t13ns) {
   GetSubTransliterations(composition, 0, composition.GetLength(), t13ns);
 }
 }  // namespace common
 }  // namespace
+
+std::shared_ptr<const commands::Request> GetSharedDefaultRequest() {
+  static const absl::NoDestructor<std::shared_ptr<const commands::Request>>
+      kRequest(new commands::Request);
+  return *kRequest;
+}
 
 // ComposerData
 
 ComposerData::ComposerData(
     Composition composition, size_t position,
     transliteration::TransliterationType input_mode,
-    commands::Context::InputFieldType input_field_type,
-    std::string source_text,
+    commands::Context::InputFieldType input_field_type, std::string source_text,
     std::vector<commands::SessionCommand::CompositionEvent>
         compositions_for_handwriting)
-    : composition_(composition),
+    : composition_(std::move(composition)),
       position_(position),
       input_mode_(input_mode),
       input_field_type_(input_field_type),
-      source_text_(source_text),
-      compositions_for_handwriting_(compositions_for_handwriting) {}
-
-ComposerData::ComposerData(const ComposerData &other)
-    : composition_(other.composition_),
-      position_(other.position_),
-      input_mode_(other.input_mode_),
-      input_field_type_(other.input_field_type_),
-      source_text_(other.source_text_),
-      compositions_for_handwriting_(other.compositions_for_handwriting_) {}
-
-ComposerData &ComposerData::operator=(const ComposerData &other) {
-  if (this != &other) {
-    composition_ = other.composition_;
-    position_ = other.position_;
-    input_mode_ = other.input_mode_;
-    input_field_type_ = other.input_field_type_;
-    source_text_ = other.source_text_;
-    compositions_for_handwriting_ = other.compositions_for_handwriting_;
-  }
-  return *this;
-}
-
-ComposerData::ComposerData(ComposerData &&other) noexcept
-    : composition_(std::move(other.composition_)),
-      position_(other.position_),
-      input_mode_(other.input_mode_),
-      input_field_type_(other.input_field_type_),
-      source_text_(std::move(other.source_text_)),
-      compositions_for_handwriting_(
-          std::move(other.compositions_for_handwriting_)) {}
-
-ComposerData &ComposerData::operator=(ComposerData &&other) noexcept {
-  if (this != &other) {
-    composition_ = std::move(other.composition_);
-    position_ = other.position_;
-    input_mode_ = other.input_mode_;
-    input_field_type_ = other.input_field_type_;
-    source_text_ = std::move(other.source_text_);
-    compositions_for_handwriting_ =
-        std::move(other.compositions_for_handwriting_);
-  }
-  return *this;
-}
+      source_text_(std::move(source_text)),
+      compositions_for_handwriting_(std::move(compositions_for_handwriting)) {}
 
 transliteration::TransliterationType ComposerData::GetInputMode() const {
   return input_mode_;
@@ -552,55 +506,70 @@ std::string ComposerData::GetRawString() const {
 }
 
 std::string ComposerData::GetRawSubString(const size_t position,
-                                      const size_t size) const {
+                                          const size_t size) const {
   return common::GetRawSubString(composition_, position, size);
 }
 
 void ComposerData::GetTransliterations(
-    transliteration::Transliterations *t13ns) const {
+    transliteration::Transliterations* t13ns) const {
   common::GetTransliterations(composition_, t13ns);
 }
 
 void ComposerData::GetSubTransliterations(
     const size_t position, const size_t size,
-    transliteration::Transliterations *t13ns) const {
+    transliteration::Transliterations* t13ns) const {
   common::GetSubTransliterations(composition_, position, size, t13ns);
 }
 
 // Composer
 
 Composer::Composer()
-    : Composer(&Table::GetDefaultTable(),
-               &commands::Request::default_instance(),
-               &config::ConfigHandler::DefaultConfig()) {}
+    : Composer(Table::GetSharedDefaultTable(), GetSharedDefaultRequest(),
+               config::ConfigHandler::GetSharedDefaultConfig()) {}
 
-Composer::Composer(const Table *table, const commands::Request *request,
-                   const config::Config *config)
+Composer::Composer(std::shared_ptr<const commands::Request> request,
+                   std::shared_ptr<const config::Config> config)
+    : Composer(Table::GetSharedDefaultTable(), std::move(request),
+               std::move(config)) {}
+
+Composer::Composer(commands::Request request, config::Config config)
+    : Composer(Table::GetSharedDefaultTable(), std::move(request),
+               std::move(config)) {}
+
+Composer::Composer(std::shared_ptr<const Table> table,
+                   commands::Request request, config::Config config)
+    : Composer(std::move(table),
+               std::make_shared<const commands::Request>(std::move(request)),
+               std::make_shared<const config::Config>(std::move(config))) {}
+
+Composer::Composer(std::shared_ptr<const Table> table,
+                   std::shared_ptr<const commands::Request> request,
+                   std::shared_ptr<const config::Config> config)
     : position_(0),
       input_mode_(transliteration::HIRAGANA),
       output_mode_(transliteration::HIRAGANA),
       comeback_input_mode_(transliteration::HIRAGANA),
       input_field_type_(commands::Context::NORMAL),
       shifted_sequence_count_(0),
-      composition_(table),
       max_length_(kMaxPreeditLength),
-      request_(request),
-      config_(config),
-      table_(table),
+      request_(std::move(request)),
+      config_(std::move(config)),
+      table_(std::move(table)),
+      composition_(table_),
       is_new_input_(true) {
+  DCHECK(request_);
+  DCHECK(config_);
+  DCHECK(table_);
   SetInputMode(transliteration::HIRAGANA);
-  if (config_ == nullptr) {
-    config_ = &config::ConfigHandler::DefaultConfig();
-  }
   Reset();
 }
 
-// static
-ComposerData Composer::CreateEmptyComposerData() {
-  static const absl::NoDestructor<Table> table;
-  static const absl::NoDestructor<Composition> composition(table.get());
-  return ComposerData(*composition, 0, transliteration::HIRAGANA,
-                      commands::Context::NORMAL, "", {});
+const ComposerData& Composer::EmptyComposerData() {
+  static const absl::NoDestructor<ComposerData> kComposerData(
+      Composition(Table::GetSharedDefaultTable()), 0, transliteration::HIRAGANA,
+      commands::Context::NORMAL, "",
+      std::vector<commands::SessionCommand::CompositionEvent>());
+  return *kComposerData;
 }
 
 ComposerData Composer::CreateComposerData() const {
@@ -625,16 +594,21 @@ void Composer::ReloadConfig() {
 
 bool Composer::Empty() const { return (GetLength() == 0); }
 
-void Composer::SetTable(const Table *table) {
-  table_ = table;
-  composition_.SetTable(table);
+void Composer::SetTable(std::shared_ptr<const Table> table) {
+  DCHECK(table);
+  table_ = std::move(table);
+  composition_.SetTable(table_);
 }
 
-void Composer::SetRequest(const commands::Request *request) {
-  request_ = request;
+void Composer::SetRequest(std::shared_ptr<const commands::Request> request) {
+  DCHECK(request);
+  request_ = std::move(request);
 }
 
-void Composer::SetConfig(const config::Config *config) { config_ = config; }
+void Composer::SetConfig(std::shared_ptr<const config::Config> config) {
+  DCHECK(config);
+  config_ = std::move(config);
+}
 
 void Composer::SetInputMode(transliteration::TransliterationType mode) {
   comeback_input_mode_ = mode;
@@ -839,11 +813,11 @@ void Composer::SetPreeditTextForTestOnly(const absl::string_view input) {
 }
 
 void Composer::SetCompositionsForHandwriting(
-    absl::Span<const commands::SessionCommand::CompositionEvent *const>
+    absl::Span<const commands::SessionCommand::CompositionEvent* const>
         compositions) {
   Reset();
   compositions_for_handwriting_.clear();
-  for (const auto &elm : compositions) {
+  for (const auto& elm : compositions) {
     compositions_for_handwriting_.push_back(*elm);
   }
 
@@ -877,7 +851,7 @@ bool Composer::InsertCharacterKeyAndPreedit(const absl::string_view key,
   return ProcessCompositionInput(std::move(input));
 }
 
-bool Composer::InsertCharacterKeyEvent(const commands::KeyEvent &key) {
+bool Composer::InsertCharacterKeyEvent(const commands::KeyEvent& key) {
   if (!EnableInsert()) {
     return false;
   }
@@ -1030,8 +1004,8 @@ void Composer::MoveCursorTo(uint32_t new_position) {
   }
 }
 
-void Composer::GetPreedit(std::string *left, std::string *focused,
-                          std::string *right) const {
+void Composer::GetPreedit(std::string* left, std::string* focused,
+                          std::string* right) const {
   DCHECK(left);
   DCHECK(focused);
   DCHECK(right);
@@ -1096,7 +1070,7 @@ std::string Composer::GetRawSubString(const size_t position,
 }
 
 void Composer::GetTransliterations(
-    transliteration::Transliterations *t13ns) const {
+    transliteration::Transliterations* t13ns) const {
   common::GetTransliterations(composition_, t13ns);
 }
 
@@ -1108,7 +1082,7 @@ std::string Composer::GetSubTransliteration(
 
 void Composer::GetSubTransliterations(
     const size_t position, const size_t size,
-    transliteration::Transliterations *t13ns) const {
+    transliteration::Transliterations* t13ns) const {
   common::GetSubTransliterations(composition_, position, size, t13ns);
 }
 
@@ -1200,7 +1174,7 @@ void Composer::AutoSwitchMode() {
 
 bool Composer::ShouldCommit() const { return composition_.ShouldCommit(); }
 
-bool Composer::ShouldCommitHead(size_t *length_to_commit) const {
+bool Composer::ShouldCommitHead(size_t* length_to_commit) const {
   size_t max_remaining_composition_length;
   switch (GetInputFieldType()) {
     case commands::Context::PASSWORD:
@@ -1237,7 +1211,7 @@ bool IsAlphabetOrNumber(const Script script) {
 }  // namespace
 
 // static
-bool Composer::TransformCharactersForNumbers(std::string *query) {
+bool Composer::TransformCharactersForNumbers(std::string* query) {
   if (query == nullptr) {
     LOG(ERROR) << "query is nullptr";
     return false;

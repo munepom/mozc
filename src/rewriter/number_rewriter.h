@@ -35,6 +35,7 @@
 #include "absl/types/span.h"
 #include "base/container/serialized_string_array.h"
 #include "base/number_util.h"
+#include "converter/candidate.h"
 #include "converter/segments.h"
 #include "data_manager/data_manager.h"
 #include "dictionary/pos_matcher.h"
@@ -46,29 +47,30 @@ namespace mozc {
 // A rewriter to expand number styles (NumberUtil::NumberString::Style)
 class NumberRewriter : public RewriterInterface {
  public:
-  explicit NumberRewriter(const DataManager *data_manager);
-  NumberRewriter(const NumberRewriter &) = delete;
-  NumberRewriter &operator=(const NumberRewriter &) = delete;
+  explicit NumberRewriter(const DataManager& data_manager);
+  NumberRewriter(const NumberRewriter&) = delete;
+  NumberRewriter& operator=(const NumberRewriter&) = delete;
   ~NumberRewriter() override;
 
-  int capability(const ConversionRequest &request) const override;
+  int capability(const ConversionRequest& request) const override;
 
-  bool Rewrite(const ConversionRequest &request,
-               Segments *segments) const override;
+  bool Rewrite(const ConversionRequest& request,
+               Segments* segments) const override;
 
-  void Finish(const ConversionRequest &request, Segments *segments) override;
+  void Finish(const ConversionRequest& request,
+              const Segments& segments) override;
 
  private:
-  bool RewriteOneSegment(const ConversionRequest &request, Segment *segment,
-                         Segments *segments) const;
-  void RememberNumberStyle(const Segment::Candidate &candidate);
-  std::vector<Segment::Candidate> GenerateCandidatesToInsert(
-      const Segment::Candidate &arabic_candidate,
+  bool RewriteOneSegment(const ConversionRequest& request, Segment* segment,
+                         Segments* segments) const;
+  void RememberNumberStyle(const converter::Candidate& candidate);
+  std::vector<converter::Candidate> GenerateCandidatesToInsert(
+      const converter::Candidate& arabic_candidate,
       absl::Span<const NumberUtil::NumberString> numbers,
       bool should_rerank) const;
-  bool ShouldRerankCandidates(const ConversionRequest &request,
-                              const Segments &segments) const;
-  void RerankCandidates(std::vector<Segment::Candidate> &candidates) const;
+  bool ShouldRerankCandidates(const ConversionRequest& request,
+                              const Segments& segments) const;
+  void RerankCandidates(std::vector<converter::Candidate>& candidates) const;
 
   SerializedStringArray suffix_array_;
   const dictionary::PosMatcher pos_matcher_;

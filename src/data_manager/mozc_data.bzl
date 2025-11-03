@@ -27,6 +27,8 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+
 def mozc_dataset(
         name,
         outs,
@@ -317,7 +319,7 @@ def mozc_dataset(
     )
 
     def _get_collocation_error_rate(data_tag):
-        return 0.00001 if data_tag != "mock" else 0.000001
+        return 1e-5 if data_tag != "mock" else 1e-6
 
     native.genrule(
         name = name + "@collocation",
@@ -435,8 +437,7 @@ def mozc_dataset(
         cmd = ("$(location //converter:gen_segmenter_code) $(SRCS) > $@"),
         tools = ["//converter:gen_segmenter_code"],
     )
-
-    native.cc_binary(
+    cc_binary(
         name = name + "@segmenter_generator",
         srcs =
             segmenter_generator_srcs +

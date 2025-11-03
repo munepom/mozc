@@ -37,6 +37,7 @@
 #include "absl/strings/string_view.h"
 #include "base/strings/assign.h"
 #include "base/util.h"
+#include "converter/candidate.h"
 #include "converter/immutable_converter_interface.h"
 #include "converter/segments.h"
 #include "protocol/commands.pb.h"
@@ -49,7 +50,7 @@ namespace converter {
 // some special symbols, e.g., "×", "÷", and "・". Returns false if the input
 // string contains non-math characters.
 bool TryNormalizingKeyAsMathExpression(const absl::string_view s,
-                                       std::string *key) {
+                                       std::string* key) {
   key->reserve(s.size());
   for (ConstChar32Iterator iter(s); !iter.Done(); iter.Next()) {
     // Half-width arabic numbers.
@@ -104,19 +105,18 @@ bool TryNormalizingKeyAsMathExpression(const absl::string_view s,
 }
 
 ReverseConverter::ReverseConverter(
-    const ImmutableConverterInterface &immutable_converter)
+    const ImmutableConverterInterface& immutable_converter)
     : immutable_converter_(immutable_converter) {}
 
 bool ReverseConverter::ReverseConvert(absl::string_view key,
-                                      Segments *segments) const {
+                                      Segments* segments) const {
   // Check if |key| looks like a math expression.  In such case, there's no
   // chance to get the correct reading by the immutable converter.  Rather,
   // simply returns normalized value.
   {
     std::string value;
     if (TryNormalizingKeyAsMathExpression(key, &value)) {
-      Segment::Candidate *cand =
-          segments->mutable_segment(0)->push_back_candidate();
+      Candidate* cand = segments->mutable_segment(0)->push_back_candidate();
       strings::Assign(cand->key, key);
       cand->value = std::move(value);
       return true;
@@ -127,14 +127,14 @@ bool ReverseConverter::ReverseConvert(absl::string_view key,
       ConversionRequestBuilder()
           .SetOptions({.request_type = ConversionRequest::REVERSE_CONVERSION})
           .Build();
-  if (!immutable_converter_.ConvertForRequest(default_request, segments)) {
+  if (!immutable_converter_.Convert(default_request, segments)) {
     return false;
   }
   if (segments->segments_size() == 0) {
     LOG(WARNING) << "no segments from reverse conversion";
     return false;
   }
-  for (const Segment &seg : *segments) {
+  for (const Segment& seg : *segments) {
     if (seg.candidates_size() == 0 || seg.candidate(0).value.empty()) {
       segments->Clear();
       LOG(WARNING) << "got an empty segment from reverse conversion";

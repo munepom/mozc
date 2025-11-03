@@ -35,9 +35,11 @@
 
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
+#include "converter/candidate.h"
 #include "converter/segments.h"
 #include "data_manager/testing/mock_data_manager.h"
 #include "dictionary/pos_matcher.h"
+#include "engine/modules.h"
 #include "protocol/commands.pb.h"
 #include "request/conversion_request.h"
 #include "request/request_test_util.h"
@@ -50,32 +52,33 @@ namespace mozc {
 using dictionary::PosMatcher;
 
 class SingleKanjiRewriterTest : public testing::TestWithTempUserProfile {
- protected:
-  SingleKanjiRewriterTest() {
-    data_manager_ = std::make_unique<testing::MockDataManager>();
-    pos_matcher_.Set(data_manager_->GetPosMatcherData());
+ public:
+  SingleKanjiRewriterTest()
+      : modules_(engine::Modules::Create(
+                     std::make_unique<testing::MockDataManager>())
+                     .value()) {}
+
+  std::unique_ptr<const SingleKanjiRewriter> CreateSingleKanjiRewriter() const {
+    return std::make_unique<SingleKanjiRewriter>(
+        modules_->GetPosMatcher(), modules_->GetSingleKanjiDictionary());
   }
 
-  SingleKanjiRewriter *CreateSingleKanjiRewriter() const {
-    return new SingleKanjiRewriter(*data_manager_);
-  }
-
-  const PosMatcher &pos_matcher() { return pos_matcher_; }
+  const PosMatcher& pos_matcher() { return modules_->GetPosMatcher(); }
 
   static void InitSegments(absl::string_view key, absl::string_view value,
-                           Segments *segments) {
-    Segment *segment = segments->add_segment();
+                           Segments* segments) {
+    Segment* segment = segments->add_segment();
     segment->set_key(key);
 
-    Segment::Candidate *candidate = segment->add_candidate();
+    converter::Candidate* candidate = segment->add_candidate();
     candidate->key.assign(key.data(), key.size());
     candidate->content_key.assign(key.data(), key.size());
     candidate->value.assign(value.data(), value.size());
     candidate->content_value.assign(value.data(), value.size());
   }
 
-  static bool Contains(const Segments &segments, absl::string_view word) {
-    const Segment &segment = segments.segment(0);
+  static bool Contains(const Segments& segments, absl::string_view word) {
+    const Segment& segment = segments.segment(0);
     for (int i = 0; i < segment.candidates_size(); ++i) {
       if (segment.candidate(i).value == word) {
         return true;
@@ -84,7 +87,7 @@ class SingleKanjiRewriterTest : public testing::TestWithTempUserProfile {
     return false;
   }
 
-  static ConversionRequest ConvReq(const commands::Request &request,
+  static ConversionRequest ConvReq(const commands::Request& request,
                                    ConversionRequest::RequestType type) {
     return ConversionRequestBuilder()
         .SetRequest(request)
@@ -92,13 +95,13 @@ class SingleKanjiRewriterTest : public testing::TestWithTempUserProfile {
         .Build();
   }
 
+  std::unique_ptr<engine::Modules> modules_;
   const ConversionRequest default_request_;
-  std::unique_ptr<testing::MockDataManager> data_manager_;
-  PosMatcher pos_matcher_;
 };
 
 TEST_F(SingleKanjiRewriterTest, CapabilityTest) {
-  std::unique_ptr<SingleKanjiRewriter> rewriter(CreateSingleKanjiRewriter());
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   commands::Request request;
   request.set_mixed_conversion(false);
@@ -108,13 +111,14 @@ TEST_F(SingleKanjiRewriterTest, CapabilityTest) {
 }
 
 TEST_F(SingleKanjiRewriterTest, SetKeyTest) {
-  std::unique_ptr<SingleKanjiRewriter> rewriter(CreateSingleKanjiRewriter());
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   Segments segments;
-  Segment *segment = segments.add_segment();
+  Segment* segment = segments.add_segment();
   const std::string kKey = "あ";
   segment->set_key(kKey);
-  Segment::Candidate *candidate = segment->add_candidate();
+  converter::Candidate* candidate = segment->add_candidate();
   // First candidate may be inserted by other rewriters.
   candidate->key = "strange key";
   candidate->content_key = "starnge key";
@@ -131,7 +135,8 @@ TEST_F(SingleKanjiRewriterTest, SetKeyTest) {
 
 TEST_F(SingleKanjiRewriterTest, MobileEnvironmentTest) {
   commands::Request request;
-  std::unique_ptr<SingleKanjiRewriter> rewriter(CreateSingleKanjiRewriter());
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   {
     request.set_mixed_conversion(true);
@@ -149,12 +154,14 @@ TEST_F(SingleKanjiRewriterTest, MobileEnvironmentTest) {
 }
 
 TEST_F(SingleKanjiRewriterTest, NounPrefixTest) {
-  SingleKanjiRewriter rewriter(*data_manager_);
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
+
   Segments segments;
-  Segment *segment1 = segments.add_segment();
+  Segment* segment1 = segments.add_segment();
 
   segment1->set_key("み");
-  Segment::Candidate *candidate1 = segment1->add_candidate();
+  converter::Candidate* candidate1 = segment1->add_candidate();
 
   candidate1->key = "み";
   candidate1->content_key = "見";
@@ -162,14 +169,14 @@ TEST_F(SingleKanjiRewriterTest, NounPrefixTest) {
   candidate1->content_value = "見";
 
   EXPECT_EQ(segment1->candidates_size(), 1);
-  rewriter.Rewrite(default_request_, &segments);
+  rewriter->Rewrite(default_request_, &segments);
 
   EXPECT_EQ(segment1->candidate(0).value, "未");
 
-  Segment *segment2 = segments.add_segment();
+  Segment* segment2 = segments.add_segment();
 
   segment2->set_key("こうたい");
-  Segment::Candidate *candidate2 = segment2->add_candidate();
+  converter::Candidate* candidate2 = segment2->add_candidate();
 
   candidate2->key = "こうたい";
   candidate2->content_key = "後退";
@@ -179,20 +186,20 @@ TEST_F(SingleKanjiRewriterTest, NounPrefixTest) {
   candidate2->rid = pos_matcher().GetContentWordWithConjugationId();
 
   candidate1 = segment1->mutable_candidate(0);
-  *candidate1 = Segment::Candidate();
+  *candidate1 = converter::Candidate();
   candidate1->key = "み";
   candidate1->content_key = "見";
   candidate1->value = "見";
   candidate1->content_value = "見";
 
-  rewriter.Rewrite(default_request_, &segments);
+  rewriter->Rewrite(default_request_, &segments);
   EXPECT_EQ(segment1->candidate(0).value, "見");
 
   // Only applied when right word's POS is noun.
   candidate2->lid = pos_matcher().GetContentNounId();
   candidate2->rid = pos_matcher().GetContentNounId();
 
-  rewriter.Rewrite(default_request_, &segments);
+  rewriter->Rewrite(default_request_, &segments);
   EXPECT_EQ(segment1->candidate(0).value, "未");
 
   EXPECT_EQ(segment1->candidate(0).lid, pos_matcher().GetNounPrefixId());
@@ -200,13 +207,15 @@ TEST_F(SingleKanjiRewriterTest, NounPrefixTest) {
 }
 
 TEST_F(SingleKanjiRewriterTest, InsertionPositionTest) {
-  SingleKanjiRewriter rewriter(*data_manager_);
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
+
   Segments segments;
-  Segment *segment = segments.add_segment();
+  Segment* segment = segments.add_segment();
 
   segment->set_key("あ");
   for (int i = 0; i < 10; ++i) {
-    Segment::Candidate *candidate = segment->add_candidate();
+    converter::Candidate* candidate = segment->add_candidate();
     candidate->key = segment->key();
     candidate->content_key = segment->key();
     candidate->value = absl::StrFormat("cand%d", i);
@@ -214,39 +223,65 @@ TEST_F(SingleKanjiRewriterTest, InsertionPositionTest) {
   }
 
   EXPECT_EQ(segment->candidates_size(), 10);
-  EXPECT_TRUE(rewriter.Rewrite(default_request_, &segments));
+  EXPECT_TRUE(rewriter->Rewrite(default_request_, &segments));
   EXPECT_LT(10, segment->candidates_size());  // Some candidates were inserted.
 
   for (int i = 0; i < 10; ++i) {
     // First 10 candidates have not changed.
-    const Segment::Candidate &candidate = segment->candidate(i);
+    const converter::Candidate& candidate = segment->candidate(i);
     EXPECT_EQ(candidate.value, absl::StrFormat("cand%d", i));
   }
 }
 
 TEST_F(SingleKanjiRewriterTest, AddDescriptionTest) {
-  SingleKanjiRewriter rewriter(*data_manager_);
-  Segments segments;
-  Segment *segment = segments.add_segment();
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
-  segment->set_key("あ");
+  Segments segments;
+
+  auto init_segment = [&segments]() {
+    segments.Clear();
+    Segment* segment = segments.add_segment();
+
+    segment->set_key("あ");
+    {
+      converter::Candidate* candidate = segment->add_candidate();
+      candidate->key = segment->key();
+      candidate->content_key = segment->key();
+      candidate->value = "亞";  // variant of "亜".
+      candidate->content_value = candidate->value;
+    }
+    return segment;
+  };
+
+  // desktop
   {
-    Segment::Candidate *candidate = segment->add_candidate();
-    candidate->key = segment->key();
-    candidate->content_key = segment->key();
-    candidate->value = "亞";  // variant of "亜".
-    candidate->content_value = candidate->value;
+    Segment* segment = init_segment();
+    EXPECT_EQ(segment->candidates_size(), 1);
+    EXPECT_TRUE(segment->candidate(0).description.empty());
+    EXPECT_TRUE(rewriter->Rewrite(default_request_, &segments));
+    EXPECT_LT(1, segment->candidates_size());  // Some candidates were inserted.
+    EXPECT_EQ(segment->candidate(0).description, "亜の旧字体");
   }
 
-  EXPECT_EQ(segment->candidates_size(), 1);
-  EXPECT_TRUE(segment->candidate(0).description.empty());
-  EXPECT_TRUE(rewriter.Rewrite(default_request_, &segments));
-  EXPECT_LT(1, segment->candidates_size());  // Some candidates were inserted.
-  EXPECT_EQ(segment->candidate(0).description, "亜の旧字体");
+  // Only sets the description in mixed conversion mode.
+  {
+    commands::Request request;
+    request_test_util::FillMobileRequest(&request);
+    Segment* segment = init_segment();
+    const ConversionRequest convreq =
+        ConvReq(request, ConversionRequest::PREDICTION);
+    EXPECT_EQ(segment->candidates_size(), 1);
+    EXPECT_TRUE(segment->candidate(0).description.empty());
+    EXPECT_TRUE(rewriter->Rewrite(convreq, &segments));
+    EXPECT_EQ(1, segment->candidates_size());  // No candidates were inserted.
+    EXPECT_EQ(segment->candidate(0).description, "亜の旧字体");
+  }
 }
 
 TEST_F(SingleKanjiRewriterTest, TriggerConditionForPrediction) {
-  SingleKanjiRewriter rewriter(*data_manager_);
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   {
     Segments segments;
@@ -256,8 +291,8 @@ TEST_F(SingleKanjiRewriterTest, TriggerConditionForPrediction) {
     request_test_util::FillMobileRequest(&request);
     const ConversionRequest convreq =
         ConvReq(request, ConversionRequest::PREDICTION);
-    ASSERT_TRUE(rewriter.capability(convreq) & RewriterInterface::PREDICTION);
-    EXPECT_FALSE(rewriter.Rewrite(convreq, &segments));
+    ASSERT_TRUE(rewriter->capability(convreq) & RewriterInterface::PREDICTION);
+    EXPECT_TRUE(rewriter->Rewrite(convreq, &segments));
   }
 
   {
@@ -268,7 +303,7 @@ TEST_F(SingleKanjiRewriterTest, TriggerConditionForPrediction) {
     request_test_util::FillMobileRequestWithHardwareKeyboard(&request);
     const ConversionRequest convreq =
         ConvReq(request, ConversionRequest::PREDICTION);
-    ASSERT_FALSE(rewriter.capability(convreq) & RewriterInterface::PREDICTION);
+    ASSERT_FALSE(rewriter->capability(convreq) & RewriterInterface::PREDICTION);
   }
 
   {
@@ -279,13 +314,14 @@ TEST_F(SingleKanjiRewriterTest, TriggerConditionForPrediction) {
     request_test_util::FillMobileRequestWithHardwareKeyboard(&request);
     const ConversionRequest convreq =
         ConvReq(request, ConversionRequest::CONVERSION);
-    ASSERT_TRUE(rewriter.capability(convreq) & RewriterInterface::CONVERSION);
-    EXPECT_TRUE(rewriter.Rewrite(convreq, &segments));
+    ASSERT_TRUE(rewriter->capability(convreq) & RewriterInterface::CONVERSION);
+    EXPECT_TRUE(rewriter->Rewrite(convreq, &segments));
   }
 }
 
 TEST_F(SingleKanjiRewriterTest, NoVariationTest) {
-  SingleKanjiRewriter rewriter(*data_manager_);
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   Segments segments;
   InitSegments("かみ", "神", &segments);  // U+795E
@@ -297,13 +333,14 @@ TEST_F(SingleKanjiRewriterTest, NoVariationTest) {
       ConvReq(request, ConversionRequest::CONVERSION);
 
   EXPECT_EQ(segments.segment(0).candidates_size(), 1);
-  EXPECT_TRUE(rewriter.Rewrite(svs_convreq, &segments));
+  EXPECT_TRUE(rewriter->Rewrite(svs_convreq, &segments));
   EXPECT_FALSE(Contains(segments, "\u795E\uFE00"));  // 神︀ SVS character.
-  EXPECT_TRUE(Contains(segments, "\uFA19"));  // 神 CJK compat ideograph.
+  EXPECT_TRUE(Contains(segments, "\uFA19"));         // 神 CJK compat ideograph.
 }
 
 TEST_F(SingleKanjiRewriterTest, SvsVariationTest) {
-  SingleKanjiRewriter rewriter(*data_manager_);
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   Segments segments;
   InitSegments("かみ", "神", &segments);  // U+795E
@@ -315,29 +352,30 @@ TEST_F(SingleKanjiRewriterTest, SvsVariationTest) {
       ConvReq(request, ConversionRequest::CONVERSION);
 
   EXPECT_EQ(segments.segment(0).candidates_size(), 1);
-  EXPECT_TRUE(rewriter.Rewrite(svs_convreq, &segments));
+  EXPECT_TRUE(rewriter->Rewrite(svs_convreq, &segments));
   EXPECT_TRUE(Contains(segments, "\u795E\uFE00"));  // 神︀ SVS character.
   EXPECT_FALSE(Contains(segments, "\uFA19"));       // 神 CJK compat ideograph.
 }
 
 TEST_F(SingleKanjiRewriterTest, EmptySegments) {
-  SingleKanjiRewriter rewriter(*data_manager_);
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
 
   Segments segments;
 
   EXPECT_EQ(segments.conversion_segments_size(), 0);
-  EXPECT_FALSE(rewriter.Rewrite(default_request_, &segments));
+  EXPECT_FALSE(rewriter->Rewrite(default_request_, &segments));
 }
 
 TEST_F(SingleKanjiRewriterTest, EmptyCandidates) {
-  SingleKanjiRewriter rewriter(*data_manager_);
-
+  std::unique_ptr<const SingleKanjiRewriter> rewriter =
+      CreateSingleKanjiRewriter();
   Segments segments;
-  Segment *segment = segments.add_segment();
+  Segment* segment = segments.add_segment();
   segment->set_key("み");
 
   EXPECT_EQ(segments.conversion_segments_size(), 1);
   EXPECT_EQ(segments.conversion_segment(0).candidates_size(), 0);
-  EXPECT_FALSE(rewriter.Rewrite(default_request_, &segments));
+  EXPECT_FALSE(rewriter->Rewrite(default_request_, &segments));
 }
 }  // namespace mozc

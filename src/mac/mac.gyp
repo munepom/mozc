@@ -275,9 +275,7 @@
           'product_name': '<(branding)',
           'dependencies': [
             '<(mozc_oss_src_dir)/base/absl.gyp:absl_base',
-            '<(mozc_oss_src_dir)/base/base.gyp:crash_report_handler',
             '<(mozc_oss_src_dir)/client/client.gyp:client',
-            '<(mozc_oss_src_dir)/config/config.gyp:stats_config_util',
             '<(mozc_oss_src_dir)/gui/gui.gyp:about_dialog_mac',
             '<(mozc_oss_src_dir)/gui/gui.gyp:config_dialog_mac',
             '<(mozc_oss_src_dir)/gui/gui.gyp:dictionary_tool_mac',
@@ -457,6 +455,32 @@
               ],
             },
             {
+              'action_name': 'copy_localization_en_file',
+              'inputs': [
+                'installer/Resources/en.lproj/Localizable.strings',
+              ],
+              'outputs': [
+                '<(gen_out_dir)/en.strings',
+              ],
+              'action': [
+                'cp', 'installer/Resources/en.lproj/Localizable.strings',
+                '<(gen_out_dir)/en.strings',
+              ],
+            },
+            {
+              'action_name': 'copy_localization_ja_file',
+              'inputs': [
+                'installer/Resources/ja.lproj/Localizable.strings',
+              ],
+              'outputs': [
+                '<(gen_out_dir)/ja.strings',
+              ],
+              'action': [
+                'cp', 'installer/Resources/ja.lproj/Localizable.strings',
+                '<(gen_out_dir)/ja.strings',
+              ],
+            },
+            {
               'action_name': 'tweak_pkgproj',
               'inputs': [ 'installer/<(branding)_template.pkgproj', ],
               'outputs': [ '<(gen_out_dir)/<(branding).pkgproj' ],
@@ -487,6 +511,8 @@
                 '<(PRODUCT_DIR)/<(branding).app',
                 '<(PRODUCT_DIR)/Uninstall<(branding).app',
                 '<(gen_out_dir)/<(branding).pkgproj',
+                '<(gen_out_dir)/en.strings',
+                '<(gen_out_dir)/ja.strings',
               ],
               'outputs': [
                 '<(PRODUCT_DIR)/<(branding).pkg',

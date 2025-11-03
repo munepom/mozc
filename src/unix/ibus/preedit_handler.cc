@@ -109,6 +109,7 @@ int CursorPos(const commands::Output &output) {
 bool PreeditHandler::Update(IbusEngineWrapper *engine,
                             const commands::Output &output) {
   if (!output.has_preedit()) {
+    engine->ClearPreeditText();
     engine->HidePreeditText();
     return true;
   }

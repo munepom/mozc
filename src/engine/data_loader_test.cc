@@ -30,24 +30,17 @@
 #include "engine/data_loader.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <memory>
 #include <string>
 
 #include "absl/base/optimization.h"
-#include "absl/log/log.h"
 #include "absl/random/random.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
-#include "base/file/temp_dir.h"
-#include "base/file_util.h"
-#include "base/hash.h"
 #include "data_manager/data_manager.h"
 #include "protocol/engine_builder.pb.h"
-#include "testing/gmock.h"
 #include "testing/gunit.h"
 #include "testing/mozctest.h"
 
@@ -62,28 +55,19 @@ static auto kNeverCalled = [](std::unique_ptr<DataLoader::Response> resposne) {
   return absl::OkStatus();
 };
 
-struct Param {
-  EngineReloadRequest::EngineType type;
-  std::string predictor_name;
-};
-
-class DataLoaderTest : public testing::TestWithTempUserProfile,
-                       public ::testing::WithParamInterface<Param> {
+class DataLoaderTest : public testing::TestWithTempUserProfile {
  protected:
   DataLoaderTest()
-      : mock_data_path_(
-            testing::GetSourcePath({MOZC_SRC_COMPONENTS("data_manager"),
-                                    "testing", "mock_mozc.data"})) {
-    const std::string mock_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "testing", "mock_mozc.data"});
-    mock_request_.set_engine_type(EngineReloadRequest::MOBILE);
+      : mock_data_path_(testing::GetSourcePath(
+            {"data_manager", "testing", "mock_mozc.data"})) {
+    const std::string mock_path =
+        testing::GetSourcePath({"data_manager", "testing", "mock_mozc.data"});
     mock_request_.set_file_path(mock_path);
     mock_request_.set_magic_number(kMockMagicNumber);
     mock_request_.set_priority(50);
 
-    const std::string oss_path = testing::GetSourcePath(
-        {MOZC_SRC_COMPONENTS("data_manager"), "oss", "mozc.data"});
-    oss_request_.set_engine_type(EngineReloadRequest::MOBILE);
+    const std::string oss_path =
+        testing::GetSourcePath({"data_manager", "oss", "mozc.data"});
     oss_request_.set_file_path(oss_path);
     oss_request_.set_magic_number(kOssMagicNumber);
     oss_request_.set_priority(50);
@@ -97,15 +81,14 @@ class DataLoaderTest : public testing::TestWithTempUserProfile,
   EngineReloadRequest oss_request_;
 };
 
-TEST_P(DataLoaderTest, AsyncBuild) {
-  request_.set_engine_type(GetParam().type);
+TEST_F(DataLoaderTest, AsyncBuild) {
   request_.set_file_path(mock_data_path_);
   request_.set_magic_number(kMockMagicNumber);
 
-  DataManager data_manager;
-  data_manager.InitFromFile(mock_data_path_, kMockMagicNumber);
-  absl::string_view expected_version = data_manager.GetDataVersion();
-  const std::string expected_filename = data_manager.GetFilename().value();
+  std::unique_ptr<const DataManager> data_manager =
+      DataManager::CreateFromFile(mock_data_path_, kMockMagicNumber).value();
+  absl::string_view expected_version = data_manager->GetDataVersion();
+  const std::string expected_filename = data_manager->GetFilename().value();
 
   int callback_called = 0;
 
@@ -114,13 +97,12 @@ TEST_P(DataLoaderTest, AsyncBuild) {
 
   EXPECT_TRUE(loader.StartNewDataBuildTask(
       request_, [&](std::unique_ptr<DataLoader::Response> response) {
-        const DataManager &response_data_manager =
+        const DataManager& response_data_manager =
             response->modules->GetDataManager();
         EXPECT_EQ(response_data_manager.GetDataVersion(), expected_version);
         EXPECT_TRUE(response_data_manager.GetFilename());
         EXPECT_EQ(response_data_manager.GetFilename().value(),
                   expected_filename);
-        EXPECT_EQ(response->response.request().engine_type(), GetParam().type);
         ++callback_called;
         return absl::OkStatus();
       }));
@@ -137,7 +119,7 @@ TEST_P(DataLoaderTest, AsyncBuild) {
   EXPECT_EQ(callback_called, 1);
 }
 
-TEST_P(DataLoaderTest, AsyncBuildRepeatedly) {
+TEST_F(DataLoaderTest, AsyncBuildRepeatedly) {
   absl::BitGen bitgen;
 
   constexpr int kMaxPriority = 1000;
@@ -169,11 +151,10 @@ TEST_P(DataLoaderTest, AsyncBuildRepeatedly) {
 
   // The request with highest priority should be loaded.
   EXPECT_GT(callback_called, 0);
-  EXPECT_NE(actual, 0);
   EXPECT_EQ(actual, expected);
 }
 
-TEST_P(DataLoaderTest, AsyncBuildWithSamePriorityRepeatedly) {
+TEST_F(DataLoaderTest, AsyncBuildWithSamePriorityRepeatedly) {
   std::string expected, actual;
   DataLoader loader;
   loader.NotifyHighPriorityDataRegisteredForTesting();
@@ -195,11 +176,10 @@ TEST_P(DataLoaderTest, AsyncBuildWithSamePriorityRepeatedly) {
   EXPECT_EQ(actual, expected);
 }
 
-TEST_P(DataLoaderTest, FailureCaseDataBroken) {
+TEST_F(DataLoaderTest, FailureCaseDataBroken) {
   // Test the case where input file is invalid.
-  request_.set_engine_type(GetParam().type);
-  request_.set_file_path(testing::GetSourceFileOrDie(
-      {MOZC_SRC_COMPONENTS("engine"), "data_loader_test.cc"}));
+  request_.set_file_path(
+      testing::GetSourceFileOrDie({"engine", "data_loader_test.cc"}));
   request_.set_magic_number(kMockMagicNumber);
 
   DataLoader loader;
@@ -210,9 +190,8 @@ TEST_P(DataLoaderTest, FailureCaseDataBroken) {
   EXPECT_FALSE(loader.StartNewDataBuildTask(request_, kNeverCalled));
 }
 
-TEST_P(DataLoaderTest, FailureCaseFileDoesNotExist) {
+TEST_F(DataLoaderTest, FailureCaseFileDoesNotExist) {
   // Test the case where input file doesn't exist.
-  request_.set_engine_type(GetParam().type);
   request_.set_file_path("file_does_not_exist");
   request_.set_magic_number(kMockMagicNumber);
 
@@ -224,7 +203,7 @@ TEST_P(DataLoaderTest, FailureCaseFileDoesNotExist) {
   EXPECT_FALSE(loader.StartNewDataBuildTask(request_, kNeverCalled));
 }
 
-TEST_P(DataLoaderTest, LowPriorityReuqestTest) {
+TEST_F(DataLoaderTest, LowPriorityRequestTest) {
   // Starts a new build of a higher request at first.
   DataLoader loader;
   loader.NotifyHighPriorityDataRegisteredForTesting();
@@ -249,7 +228,7 @@ TEST_P(DataLoaderTest, LowPriorityReuqestTest) {
   EXPECT_EQ(callback_called, 1);
 }
 
-TEST_P(DataLoaderTest, WaitHighPriorityDataTest) {
+TEST_F(DataLoaderTest, WaitHighPriorityDataTest) {
   auto make_request = [&](int priority) {
     EngineReloadRequest request = mock_request_;
     request.set_priority(priority);
@@ -279,7 +258,7 @@ TEST_P(DataLoaderTest, WaitHighPriorityDataTest) {
   EXPECT_EQ(callback_called, 1);  // only 10.
 }
 
-TEST_P(DataLoaderTest, WaitHighPriorityDataTimeoutTest) {
+TEST_F(DataLoaderTest, WaitHighPriorityDataTimeoutTest) {
   auto make_request = [&](int priority) {
     EngineReloadRequest request = mock_request_;
     request.set_priority(priority);
@@ -313,14 +292,6 @@ TEST_P(DataLoaderTest, WaitHighPriorityDataTimeoutTest) {
 
   EXPECT_EQ(callback_called, 2);  // 50 and 10
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    DataLoaderTest, DataLoaderTest,
-    ::testing::Values(Param{EngineReloadRequest::DESKTOP, "DefaultPredictor"},
-                      Param{EngineReloadRequest::MOBILE, "MobilePredictor"}),
-    [](const ::testing::TestParamInfo<Param> &info) -> std::string {
-      return info.param.predictor_name;
-    });
 
 }  // namespace
 }  // namespace mozc

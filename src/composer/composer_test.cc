@@ -50,10 +50,20 @@
 #include "protocol/commands.pb.h"
 #include "protocol/config.pb.h"
 #include "testing/gunit.h"
+#include "testing/test_peer.h"
 #include "transliteration/transliteration.h"
 
 namespace mozc {
 namespace composer {
+
+class ComposerTestPeer : public testing::TestPeer<Composer> {
+ public:
+  explicit ComposerTestPeer(Composer& composer)
+      : testing::TestPeer<Composer>(composer) {}
+
+  PEER_METHOD(ApplyTemporaryInputMode);
+};
+
 namespace {
 
 using ::mozc::commands::KeyEvent;
@@ -61,7 +71,7 @@ using ::mozc::commands::Request;
 using ::mozc::config::CharacterFormManager;
 using ::mozc::config::Config;
 
-bool InsertKey(const absl::string_view key_string, Composer *composer) {
+bool InsertKey(const absl::string_view key_string, Composer* composer) {
   commands::KeyEvent key;
   if (!KeyParser::ParseKey(key_string, &key)) {
     return false;
@@ -71,7 +81,7 @@ bool InsertKey(const absl::string_view key_string, Composer *composer) {
 
 bool InsertKeyWithMode(const absl::string_view key_string,
                        const commands::CompositionMode mode,
-                       Composer *composer) {
+                       Composer* composer) {
   commands::KeyEvent key;
   if (!KeyParser::ParseKey(key_string, &key)) {
     return false;
@@ -80,7 +90,7 @@ bool InsertKeyWithMode(const absl::string_view key_string,
   return composer->InsertCharacterKeyEvent(key);
 }
 
-void ExpectSameComposer(const Composer &lhs, const Composer &rhs) {
+void ExpectSameComposer(const Composer& lhs, const Composer& rhs) {
   EXPECT_EQ(lhs.GetCursor(), rhs.GetCursor());
   EXPECT_EQ(lhs.is_new_input(), rhs.is_new_input());
   EXPECT_EQ(lhs.GetInputMode(), rhs.GetInputMode());
@@ -102,31 +112,26 @@ void ExpectSameComposer(const Composer &lhs, const Composer &rhs) {
 class ComposerTest : public ::testing::Test {
  protected:
   ComposerTest() = default;
-  ComposerTest(const ComposerTest &) = delete;
-  ComposerTest &operator=(const ComposerTest &) = delete;
+  ComposerTest(const ComposerTest&) = delete;
+  ComposerTest& operator=(const ComposerTest&) = delete;
   ~ComposerTest() override = default;
 
   void SetUp() override {
-    table_ = std::make_unique<Table>();
-    config_ = std::make_unique<Config>();
-    request_ = std::make_unique<Request>();
-    composer_ =
-        std::make_unique<Composer>(table_.get(), request_.get(), config_.get());
+    table_ = std::make_shared<Table>();
+    config_ = std::make_shared<Config>();
+    request_ = std::make_shared<Request>();
+    composer_ = std::make_unique<Composer>(table_, request_, config_);
     CharacterFormManager::GetCharacterFormManager()->SetDefaultRule();
   }
 
   void TearDown() override {
     CharacterFormManager::GetCharacterFormManager()->SetDefaultRule();
-    composer_.reset();
-    request_.reset();
-    config_.reset();
-    table_.reset();
   }
 
   std::unique_ptr<Composer> composer_;
-  std::unique_ptr<Table> table_;
-  std::unique_ptr<Request> request_;
-  std::unique_ptr<Config> config_;
+  std::shared_ptr<Table> table_;
+  std::shared_ptr<Request> request_;
+  std::shared_ptr<Config> config_;
 };
 
 TEST_F(ComposerTest, Reset) {
@@ -552,7 +557,7 @@ TEST_F(ComposerTest, Issue277163340) {
   // Test against http://b/277163340.
   // Before the fix, unexpected input was passed to
   // RemoveExpandedCharsForModifier() in the following test due to another
-  // bug in composer/internal/char_chunk.cc and it
+  // bug in composer/char_chunk.cc and it
   // caused the process to crash.
   table_->AddRuleWithAttributes("[", "", "", NO_TRANSLITERATION);
   commands::KeyEvent key;
@@ -642,7 +647,7 @@ TEST_F(ComposerTest, GetStringFunctionsInputFieldType) {
   composer_->SetInputMode(transliteration::HIRAGANA);
   for (size_t test_data_index = 0; test_data_index < std::size(test_data_list);
        ++test_data_index) {
-    const TestData &test_data = test_data_list[test_data_index];
+    const TestData& test_data = test_data_list[test_data_index];
     composer_->SetInputFieldType(test_data.field_type);
     std::string key;
     for (char c = 0x20; c <= 0x7E; ++c) {
@@ -855,8 +860,7 @@ TEST_F(ComposerTest, InsertCharacterKeyEventWithInputMode) {
     EXPECT_EQ(composer_->GetInputMode(), transliteration::HIRAGANA);
   }
 
-  composer_ =
-      std::make_unique<Composer>(table_.get(), request_.get(), config_.get());
+  composer_ = std::make_unique<Composer>(table_, request_, config_);
 
   {
     // "a" → "あ" (Hiragana)
@@ -897,6 +901,8 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
   constexpr bool kCapsLocked = true;
   constexpr bool kCapsUnlocked = false;
 
+  ComposerTestPeer composer_peer(*composer_);
+
   table_->AddRule("a", "あ", "");
   composer_->SetInputMode(transliteration::HIRAGANA);
 
@@ -921,8 +927,8 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
     };
 
     for (int i = 0; i < std::size(kTestDataAscii); ++i) {
-      composer_->ApplyTemporaryInputMode(kTestDataAscii[i].first,
-                                         kCapsUnlocked);
+      composer_peer.ApplyTemporaryInputMode(kTestDataAscii[i].first,
+                                            kCapsUnlocked);
 
       const transliteration::TransliterationType expected =
           kTestDataAscii[i].second ? transliteration::HALF_ASCII
@@ -952,7 +958,8 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
     };
 
     for (int i = 0; i < std::size(kTestDataAscii); ++i) {
-      composer_->ApplyTemporaryInputMode(kTestDataAscii[i].first, kCapsLocked);
+      composer_peer.ApplyTemporaryInputMode(kTestDataAscii[i].first,
+                                            kCapsLocked);
 
       const transliteration::TransliterationType expected =
           kTestDataAscii[i].second ? transliteration::HALF_ASCII
@@ -982,8 +989,8 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
     };
 
     for (int i = 0; i < std::size(kTestDataKatakana); ++i) {
-      composer_->ApplyTemporaryInputMode(kTestDataKatakana[i].first,
-                                         kCapsUnlocked);
+      composer_peer.ApplyTemporaryInputMode(kTestDataKatakana[i].first,
+                                            kCapsUnlocked);
 
       const transliteration::TransliterationType expected =
           kTestDataKatakana[i].second ? transliteration::FULL_KATAKANA
@@ -1013,8 +1020,8 @@ TEST_F(ComposerTest, ApplyTemporaryInputMode) {
     };
 
     for (int i = 0; i < std::size(kTestDataKatakana); ++i) {
-      composer_->ApplyTemporaryInputMode(kTestDataKatakana[i].first,
-                                         kCapsLocked);
+      composer_peer.ApplyTemporaryInputMode(kTestDataKatakana[i].first,
+                                            kCapsLocked);
 
       const transliteration::TransliterationType expected =
           kTestDataKatakana[i].second ? transliteration::FULL_KATAKANA
@@ -1258,8 +1265,7 @@ TEST_F(ComposerTest, AutoIMETurnOffEnabled) {
     EXPECT_EQ(composer_->GetInputMode(), transliteration::HIRAGANA);
   }
 
-  composer_ =
-      std::make_unique<Composer>(table_.get(), request_.get(), config_.get());
+  composer_ = std::make_unique<Composer>(table_, request_, config_);
 
   {  // google
     InsertKey("g", composer_.get());
@@ -1324,8 +1330,7 @@ TEST_F(ComposerTest, AutoIMETurnOffEnabled) {
   }
 
   config_->set_shift_key_mode_switch(Config::OFF);
-  composer_ =
-      std::make_unique<Composer>(table_.get(), request_.get(), config_.get());
+  composer_ = std::make_unique<Composer>(table_, request_, config_);
 
   {  // Google
     InsertKey("G", composer_.get());
@@ -1555,9 +1560,9 @@ TEST_F(ComposerTest, UpdateInputMode) {
 
 TEST_F(ComposerTest, DisabledUpdateInputMode) {
   // Set the flag disable.
-  commands::Request request;
-  request.set_update_input_mode_from_surrounding_text(false);
-  composer_->SetRequest(&request);
+  auto request = std::make_shared<commands::Request>();
+  request->set_update_input_mode_from_surrounding_text(false);
+  composer_->SetRequest(request);
 
   table_->AddRule("a", "あ", "");
   table_->AddRule("i", "い", "");
@@ -1764,7 +1769,7 @@ TEST_F(ComposerTest, TransformCharactersForNumbers) {
 }
 
 TEST_F(ComposerTest, PreeditFormAfterCharacterTransform) {
-  CharacterFormManager *manager =
+  CharacterFormManager* manager =
       CharacterFormManager::GetCharacterFormManager();
   table_->AddRule("0", "０", "");
   table_->AddRule("1", "１", "");
@@ -2363,7 +2368,7 @@ TEST_F(ComposerTest, ShouldCommitHead) {
   };
 
   for (size_t i = 0; i < std::size(test_data_list); ++i) {
-    const TestData &test_data = test_data_list[i];
+    const TestData& test_data = test_data_list[i];
     SCOPED_TRACE(test_data.input_text);
     SCOPED_TRACE(test_data.field_type);
     SCOPED_TRACE(test_data.expected_return);
@@ -2510,14 +2515,14 @@ TEST_F(ComposerTest, DeleteRange) {
 
 TEST_F(ComposerTest, 12KeysAsciiGetQueryForPrediction) {
   // http://b/5509480
-  commands::Request request;
-  request.set_zero_query_suggestion(true);
-  request.set_mixed_conversion(true);
-  request.set_special_romanji_table(
+  auto request = std::make_shared<commands::Request>();
+  request->set_zero_query_suggestion(true);
+  request->set_mixed_conversion(true);
+  request->set_special_romanji_table(
       commands::Request::TWELVE_KEYS_TO_HALFWIDTHASCII);
-  composer_->SetRequest(&request);
+  composer_->SetRequest(request);
   table_->InitializeWithRequestAndConfig(
-      request, config::ConfigHandler::DefaultConfig());
+      *request, config::ConfigHandler::DefaultConfig());
   composer_->InsertCharacter("2");
   EXPECT_EQ(composer_->GetStringForPreedit(), "a");
   EXPECT_EQ(composer_->GetQueryForConversion(), "a");
@@ -2541,7 +2546,7 @@ TEST_F(ComposerTest, InsertCharacterPreedit) {
   }
   composer_->Reset();
   {
-    for (const std::string &c : Util::SplitStringToUtf8Chars(kTestStr)) {
+    for (const std::string& c : Util::SplitStringToUtf8Chars(kTestStr)) {
       composer_->InsertCharacterPreedit(c);
     }
     const std::string preedit = composer_->GetStringForPreedit();
@@ -2923,7 +2928,7 @@ TEST_F(ComposerTest, NBforeN_WithFullWidth) {
   table_->AddRule("nn", "ん", "");
   table_->AddRule("a", "あ", "");
 
-  CharacterFormManager *manager =
+  CharacterFormManager* manager =
       CharacterFormManager::GetCharacterFormManager();
   manager->SetDefaultRule();
   manager->AddPreeditRule("a", Config::FULL_WIDTH);
@@ -2945,7 +2950,8 @@ TEST_F(ComposerTest, NBforeN_WithFullWidth) {
   EXPECT_EQ(right, "");
 
   // auto = std::pair<std::string, absl::btree_set<std::string>>
-  const auto [queries_base, queries_expanded] = composer_->GetQueriesForPrediction();
+  const auto [queries_base, queries_expanded] =
+      composer_->GetQueriesForPrediction();
   EXPECT_EQ(queries_base, "あn");
 
   EXPECT_EQ(composer_->GetQueryForPrediction(), "あnn");
@@ -2969,7 +2975,7 @@ TEST_F(ComposerTest, NBforeN_WithHalfWidth) {
   table_->AddRule("nn", "ん", "");
   table_->AddRule("a", "あ", "");
 
-  CharacterFormManager *manager =
+  CharacterFormManager* manager =
       CharacterFormManager::GetCharacterFormManager();
   manager->SetDefaultRule();
   manager->AddPreeditRule("a", Config::HALF_WIDTH);
@@ -3019,7 +3025,7 @@ TEST_F(ComposerTest, GetStringForTypeCorrectionTest) {
 TEST_F(ComposerTest, UpdateComposition) {
   {
     commands::SessionCommand command;
-    commands::SessionCommand::CompositionEvent *composition_event =
+    commands::SessionCommand::CompositionEvent* composition_event =
         command.add_composition_events();
     composition_event->set_composition_string("かん字");
     composition_event->set_probability(1.0);
@@ -3031,7 +3037,7 @@ TEST_F(ComposerTest, UpdateComposition) {
 
   {
     commands::SessionCommand command;
-    commands::SessionCommand::CompositionEvent *composition_event =
+    commands::SessionCommand::CompositionEvent* composition_event =
         command.add_composition_events();
     composition_event->set_composition_string("ねこ");
     composition_event->set_probability(0.9);
@@ -3120,7 +3126,7 @@ TEST_F(ComposerTest, CreateComposerData) {
 
 TEST_F(ComposerTest, CreateComposerDataForHandwriting) {
   commands::SessionCommand command;
-  commands::SessionCommand::CompositionEvent *composition_event =
+  commands::SessionCommand::CompositionEvent* composition_event =
       command.add_composition_events();
   composition_event->set_composition_string("ねこ");
   composition_event->set_probability(0.9);
@@ -3224,7 +3230,7 @@ TEST_F(ComposerTest, CreateComposerOperators) {
 }
 
 TEST_F(ComposerTest, CreateEmptyComposerData) {
-  const ComposerData data = Composer::CreateEmptyComposerData();
+  const ComposerData& data = Composer::EmptyComposerData();
   EXPECT_EQ(data.GetInputMode(), transliteration::HIRAGANA);
   EXPECT_EQ(data.GetStringForPreedit(), "");
   EXPECT_EQ(data.GetQueryForConversion(), "");
